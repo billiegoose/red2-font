@@ -17,3 +17,11 @@ Design goal: a retro-futuristic vibe, inspired by old arcade space games, HAL-90
 ![14-segment displays](./fourteen-segment-led-display-font-letters-numerals-60906873.webp)
 
 ![Vacuum flourescent displays (circa 1980s)](./VFD-stereo.png)
+
+![Neon Lights](./Neon.jpg)
+
+![ROSS logotype](./ross.jpg)
+
+![Breadboard wiring done realllly well](./james_albin_wiring.webp)
+
+![Classic "Pipes" screensaver](./pipes_screensaver.png)
