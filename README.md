@@ -2,7 +2,7 @@
 
 I felt like designing a font, so I did.
 
-Render the sliced glyphs (currently `0-9` and `A-Z`) with Python and Aseprite:
+Render the sliced glyphs with Python and Aseprite:
 
 ```sh
 python3 -m venv .venv
@@ -14,7 +14,7 @@ python render_font.py "0123456789ABCD"
 This runs `aseprite` from PATH, exports the first frame and slice metadata to
 temporary files, maps slice userdata such as `c=65` to character code points,
 and writes a black-background `output.png` in the current directory. It exports only
-the `Text` layer, excluding the Background guide lines. Transparent margins are
+the `Glyphs` layer, excluding the Background guide lines. Transparent margins are
 cropped horizontally; vertical slice metrics and blank space widths are preserved.
 Use `--aseprite /path/to/aseprite`, `--source font.aseprite`, or
 `--output preview.png` to override the defaults.
@@ -41,8 +41,10 @@ python render_font.py "AVATAR" --spacing 2
 python -m unittest test_render_font.py
 ```
 
-`--pairs` renders all 676 uppercase pairs in 26 rows (`AA AB … AZ`,
-`BA BB … BZ`, etc.), separated by the font's space glyph. Text input also supports
+`--pairs` renders every ordered pair of available glyphs, including digits,
+punctuation, and spaces, ordered by code point. For N glyphs, it produces N² pairs
+in N rows. Pair samples have a separate visual gap and do not require a space
+slice. Text input also supports
 newlines. `--spacing` controls the minimum gap and vertical search radius and `--layer` selects the artwork
 layer. Advances are computed from the cropped widths and cached for repeated pairs.
 
@@ -53,3 +55,5 @@ may be one pixel apart: glyphs can touch, but their pixels do not overlap.
 left/right characters, requested spacing, advance, adjustment relative to cropped
 width plus spacing, and the actual minimum pixel-center distance minus 1.
 Distances are measured across all occupied pixels and rounded to six decimals.
+
+CSV distances are blank for pairs containing an empty glyph such as space.

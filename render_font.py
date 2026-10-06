@@ -36,7 +36,7 @@ def validate_slices(slices):
     return codes
 
 
-def load_glyphs(source, aseprite, layer="Text"):
+def load_glyphs(source, aseprite, layer="Glyphs"):
     """Export only glyph artwork, then crop horizontal transparent margins."""
     with tempfile.TemporaryDirectory(prefix="red2-font-") as directory:
         sheet = Path(directory) / "sheet.png"
@@ -191,18 +191,40 @@ def export_kerning_csv(path, alphabet, glyphs, kerning):
                 writer.writerow([left, right, kerning.spacing, advance, adjustment, gap])
 
 
-def render(text, source, output, aseprite, spacing=4, layer="Text", pairs=False):
+def compose_pairs(glyphs, kerning):
+    """Render every glyph pair, ordered by code point, without a space dependency."""
+    codes = sorted(glyphs)
+    if not codes:
+        return Image.new("RGBA", (1, 1), (0, 0, 0, 255))
+    height = max(glyph.height for glyph in glyphs.values())
+    separator = glyphs[32].width if 32 in glyphs else 12
+    separator += 2 * kerning.spacing
+    rows = []
+    width = 1
+    for left in codes:
+        x = 0
+        placements = []
+        for right in codes:
+            advance = kerning.advance(left, right)
+            placements.extend([(left, x), (right, x + advance)])
+            pair_width = max(glyphs[left].width, advance + glyphs[right].width)
+            width = max(width, x + pair_width)
+            x += pair_width + separator
+        rows.append(placements)
+    image = Image.new("RGBA", (width, (len(rows)-1)*(height+4)+height), (0, 0, 0, 255))
+    for row, placements in enumerate(rows):
+        for code, x in placements:
+            image.alpha_composite(glyphs[code], (x, row * (height + 4)))
+    return image
+
+
+def render(text, source, output, aseprite, spacing=4, layer="Glyphs", pairs=False):
     glyphs = load_glyphs(source, aseprite, layer)
-    if pairs:
-        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-        missing = [c for c in alphabet if ord(c) not in glyphs]
-        if missing or ord(" ") not in glyphs:
-            raise ValueError("Pair specimen requires slices for A-Z and space.")
-        text = "\n".join(" ".join(a + b for b in alphabet) for a in alphabet)
     kerning = AutoKerning(glyphs, spacing)
-    image = compose(text, glyphs, kerning)
+    image = compose_pairs(glyphs, kerning) if pairs else compose(text, glyphs, kerning)
     image.save(output, format="PNG")
     if pairs:
+        alphabet = [chr(code) for code in sorted(glyphs)]
         csv_path = Path(output).with_name("kerning_pairs.csv")
         export_kerning_csv(csv_path, alphabet, glyphs, kerning)
         print(f"Saved {csv_path} ({len(alphabet)**2} pairs)")
@@ -226,9 +248,9 @@ def main():
         default="aseprite",
         help="Aseprite executable (default: aseprite on PATH)",
     )
-    parser.add_argument("--pairs", action="store_true", help="Render the 26×26 A-Z pair specimen")
+    parser.add_argument("--pairs", action="store_true", help="Render every ordered pair of available glyphs")
     parser.add_argument("--spacing", type=int, default=4, help="Minimum edge gap and vertical search radius in pixels (default: 4)")
-    parser.add_argument("--layer", default="Text", help="Artwork layer to export (default: Text)")
+    parser.add_argument("--layer", default="Glyphs", help="Artwork layer to export (default: Glyphs)")
     args = parser.parse_args()
     if args.spacing < 0:
         parser.error("--spacing must be at least 0")

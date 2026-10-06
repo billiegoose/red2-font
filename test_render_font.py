@@ -1,10 +1,14 @@
 import contextlib
+import csv
 import io
 import unittest
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 
-from render_font import AutoKerning, compose
+from render_font import AutoKerning, compose, render
 
 
 def glyph(rows):
@@ -79,6 +83,22 @@ class KerningTests(unittest.TestCase):
         self.assertEqual(image.size, (7, 8))
         self.assertIn("'?'", warnings.getvalue())
         self.assertNotIn("'\\n'", warnings.getvalue())
+
+    def test_pairs_include_all_glyphs_without_space_slice(self):
+        glyphs = {65: glyph(["##"]), 48: glyph(["##"]), 33: glyph(["#."])}
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "pairs.png"
+            with patch("render_font.load_glyphs", return_value=glyphs) as load:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    render("", Path("font.aseprite"), output, "aseprite", pairs=True)
+                self.assertEqual(load.call_args.args[2], "Glyphs")
+            with output.with_name("kerning_pairs.csv").open() as file:
+                rows = list(csv.DictReader(file))
+            self.assertEqual([(row["left"], row["right"]) for row in rows],
+                             [(a, b) for a in "!0A" for b in "!0A"])
+            with Image.open(output) as image:
+                self.assertEqual(image.height, 11)
+                self.assertEqual(image.getchannel("A").getextrema(), (255, 255))
 
     def test_empty_output(self):
         image = compose("", {}, AutoKerning({}))
