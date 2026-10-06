@@ -66,10 +66,17 @@ class KerningTests(unittest.TestCase):
                 advance = kern.advance(65, 65)
                 distances = [(advance + yy - y)**2 + (yy - y)**2
                              for y in range(7) for yy in range(7)]
-                self.assertGreaterEqual(min(distances), (spacing + 1)**2)
-                closer = [(advance - 1 + yy - y)**2 + (yy - y)**2
-                          for y in range(7) for yy in range(7)]
-                self.assertLess(min(closer), (spacing + 1)**2)
+                error = abs(min(distances)**0.5 - 1 - spacing)
+                for candidate in (advance - 1, advance + 1):
+                    alternative = min((candidate + yy - y)**2 + (yy-y)**2
+                                      for y in range(7) for yy in range(7))
+                    self.assertLessEqual(error, abs(alternative**0.5 - 1 - spacing))
+
+    def test_nearest_gap_may_be_below_target(self):
+        diagonal = glyph(["#....", ".#...", "..#..", "...#.", "....#"])
+        kern = AutoKerning({65: diagonal}, spacing=2)
+        # Advance 4 gives sqrt(8)-1 = 1.828; advance 5 gives sqrt(13)-1 = 2.606.
+        self.assertEqual(kern.advance(65, 65), 4)
 
     def test_zero_spacing_allows_adjacent_pixels(self):
         glyphs = {65: glyph(["##"] * 3)}

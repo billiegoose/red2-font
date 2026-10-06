@@ -102,7 +102,7 @@ def contours(glyph):
 
 
 class AutoKerning:
-    """Tighten pairs while preserving Euclidean clearance between nearby edges."""
+    """Choose the integer placement whose nearby-edge gap is closest to the target."""
 
     def __init__(self, glyphs, spacing=4):
         self.glyphs = glyphs
@@ -128,15 +128,26 @@ class AutoKerning:
                      for y in a for yy in b if abs(yy - y) <= self.spacing]
         if not neighbors:
             return nominal
-        minimum_squared = (self.spacing + 1) ** 2
+        target_distance = self.spacing + 1
+
+        def distance(x):
+            return math.sqrt(min((x + dx)**2 + dy**2 for dx, dy in neighbors))
+
         advance = nominal
-        while all(
-            advance - 1 + dx > 0
-            and (advance - 1 + dx) ** 2 + dy ** 2 >= minimum_squared
-            for dx, dy in neighbors
-        ):
-            advance -= 1
-        return advance
+        previous_distance = distance(advance)
+        while True:
+            closer = advance - 1
+            # Preserve left-to-right contour order; spacing zero must not overlap.
+            if any(closer + dx <= 0 for dx, _ in neighbors):
+                return advance
+            current_distance = distance(closer)
+            if current_distance < target_distance:
+                # Prefer the wider placement if both errors are exactly equal.
+                if target_distance - current_distance < previous_distance - target_distance:
+                    return closer
+                return advance
+            advance = closer
+            previous_distance = current_distance
 
 
 def compose(text, glyphs, kerning):
@@ -254,7 +265,7 @@ def main():
         help="Aseprite executable (default: aseprite on PATH)",
     )
     parser.add_argument("--pairs", action="store_true", help="Render every ordered pair of available glyphs")
-    parser.add_argument("--spacing", type=int, default=4, help="Minimum edge gap and vertical search radius in pixels (default: 4)")
+    parser.add_argument("--spacing", type=int, default=4, help="Target edge gap and vertical search radius in pixels (default: 4)")
     parser.add_argument("--layer", default="Glyphs", help="Artwork layer to export (default: Glyphs)")
     args = parser.parse_args()
     if args.spacing < 0:
