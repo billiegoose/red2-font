@@ -2,6 +2,8 @@
 
 I felt like designing a font, so I did.
 
+![Example render](./example.png)
+
 Render the sliced glyphs with Python and Aseprite:
 
 ```sh
@@ -51,9 +53,17 @@ layer. Advances are computed from the cropped widths and cached for repeated pai
 `--spacing` accepts nonnegative integers. At `--spacing 0`, edge pixel centers
 may be one pixel apart: glyphs can touch, but their pixels do not overlap.
 
-`--pairs` also writes `kerning_pairs.csv` beside the PNG. Columns contain the
+`--pairs` also writes `kerning_pairs.csv` beside the PNG, omitting pairs whose
+kerning adjustment is zero. The PNG still shows every pair. Columns contain the
 left/right characters, requested spacing, advance, adjustment relative to cropped
 width plus spacing, and the actual minimum pixel-center distance minus 1.
 Distances are measured across all occupied pixels and rounded to six decimals.
 
 CSV distances are blank for pairs containing an empty glyph such as space.
+
+The example render test uses the real Aseprite font and writes `example.png` in
+the project directory. Run it on its own with:
+
+```sh
+python -m unittest test_render_font.ExampleRenderTest
+```

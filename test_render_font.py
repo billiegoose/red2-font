@@ -11,6 +11,16 @@ from PIL import Image
 from render_font import AutoKerning, compose, render
 
 
+EXAMPLE_TEXT = """THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG.
+PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS!
+LOOK! A QUIET KOALA WALKS ALONG THE QUAY.
+AVATAR / WAVY / TYPOGRAPHY / MINIMUM / 0123456789
+RED2 FONT: VERSION 1.0 | STATUS: READY
+PRICE: $12.50 + 8% TAX = $13.50
+(ROUND) [SQUARE] {CURLY} <ANGLE> @HOME #42
+"HELLO, WORLD!" & 'GOODBYE'; A_B ~ C^D * E?"""
+
+
 def glyph(rows):
     image = Image.new("RGBA", (len(rows[0]), len(rows)))
     for y, row in enumerate(rows):
@@ -95,7 +105,8 @@ class KerningTests(unittest.TestCase):
             with output.with_name("kerning_pairs.csv").open() as file:
                 rows = list(csv.DictReader(file))
             self.assertEqual([(row["left"], row["right"]) for row in rows],
-                             [(a, b) for a in "!0A" for b in "!0A"])
+                             [("!", b) for b in "!0A"])
+            self.assertTrue(all(int(row["kerning_px"]) != 0 for row in rows))
             with Image.open(output) as image:
                 self.assertEqual(image.height, 11)
                 self.assertEqual(image.getchannel("A").getextrema(), (255, 255))
@@ -104,6 +115,24 @@ class KerningTests(unittest.TestCase):
         image = compose("", {}, AutoKerning({}))
         self.assertEqual(image.size, (1, 1))
         self.assertEqual(image.getpixel((0, 0)), (0, 0, 0, 255))
+
+
+class ExampleRenderTest(unittest.TestCase):
+    def test_example_render(self):
+        """Render the real font sample and leave example.png for the README."""
+        directory = Path(__file__).resolve().parent
+        output = directory / "example.png"
+        warnings = io.StringIO()
+        with contextlib.redirect_stderr(warnings):
+            size = render(EXAMPLE_TEXT, directory / "RED2 Font.aseprite",
+                          output, "aseprite")
+        self.assertEqual(warnings.getvalue(), "", "Sample text has missing glyphs")
+        with Image.open(output) as image:
+            self.assertEqual(image.size, size)
+            self.assertGreater(image.width, 1)
+            self.assertGreater(image.height, 1)
+            self.assertEqual(image.getchannel("A").getextrema(), (255, 255))
+            self.assertIsNotNone(image.convert("RGB").getbbox(), "Sample has no glyph pixels")
 
 
 if __name__ == "__main__":

@@ -169,13 +169,14 @@ def compose(text, glyphs, kerning):
 
 
 def export_kerning_csv(path, alphabet, glyphs, kerning):
-    """Export advances and actual closest-pixel gaps for the pair specimen."""
+    """Export nonzero kerning adjustments and actual closest-pixel gaps."""
     pixels = {}
     for character in alphabet:
         image = glyphs[ord(character)]
         alpha = image.getchannel("A")
         pixels[character] = [(x, y) for y in range(image.height)
                              for x in range(image.width) if alpha.getpixel((x, y))]
+    count = 0
     with Path(path).open("w", newline="") as file:
         writer = csv.writer(file)
         writer.writerow(["left", "right", "spacing_px", "advance_px", "kerning_px", "min_gap_px"])
@@ -183,12 +184,16 @@ def export_kerning_csv(path, alphabet, glyphs, kerning):
             for right in alphabet:
                 advance = kerning.advance(ord(left), ord(right))
                 adjustment = advance - glyphs[ord(left)].width - kerning.spacing
+                if adjustment == 0:
+                    continue
                 # Measure all pixel pairs, including rows beyond the search radius.
                 squared = min(((advance + bx - ax)**2 + (by - ay)**2
                                for ax, ay in pixels[left] for bx, by in pixels[right]),
                               default=None)
                 gap = "" if squared is None else f"{math.sqrt(squared) - 1:.6f}"
                 writer.writerow([left, right, kerning.spacing, advance, adjustment, gap])
+                count += 1
+    return count
 
 
 def compose_pairs(glyphs, kerning):
@@ -226,8 +231,8 @@ def render(text, source, output, aseprite, spacing=4, layer="Glyphs", pairs=Fals
     if pairs:
         alphabet = [chr(code) for code in sorted(glyphs)]
         csv_path = Path(output).with_name("kerning_pairs.csv")
-        export_kerning_csv(csv_path, alphabet, glyphs, kerning)
-        print(f"Saved {csv_path} ({len(alphabet)**2} pairs)")
+        count = export_kerning_csv(csv_path, alphabet, glyphs, kerning)
+        print(f"Saved {csv_path} ({count} nonzero kerning pairs)")
     return image.size
 
 
