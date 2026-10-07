@@ -2,6 +2,7 @@
 """Export Aseprite slices and render text using available glyphs."""
 
 import argparse
+from collections import deque
 import csv
 import json
 import math
@@ -119,7 +120,7 @@ def horizontal_ink_metrics(glyph):
 
 
 class AutoKerning:
-    """Choose the nearest edge gap, keeping glyph right edges in reading order."""
+    """Choose the nearest edge gap, keeping both glyph edges in reading order."""
 
     def __init__(self, glyphs, spacing=4):
         self.glyphs = glyphs
@@ -139,8 +140,9 @@ class AutoKerning:
         if not a or not b:
             return nominal
         # Allow complete nesting only up to flush right alignment. A narrow
-        # glyph can share the left glyph's width, but cannot end inside it.
-        minimum = self.glyphs[left].width - self.glyphs[right].width
+        # glyph can share the left glyph's width, but cannot end inside it or
+        # place its left edge before the left glyph's left edge.
+        minimum = max(0, self.glyphs[left].width - self.glyphs[right].width)
         # spacing empty pixels along a straight row means spacing + 1
         # between pixel centers. Compare facing edges within +/- spacing rows;
         # more distant rows cannot violate this clearance on the integer grid.
@@ -175,29 +177,31 @@ class AutoKerning:
 def layout_line(codes, kerning):
     """Place glyphs with pair clearance from every earlier glyph in the line.
 
-    ``kerning`` supplies glyph widths, spacing, and ordered pair advances. Codes
-    are source code points for AutoKerning or glyph IDs for a decoded font.
+    ``kerning`` supplies glyph widths, spacing, and pair advances satisfying
+    max(0, left.width - right.width) <= advance <= left.width + spacing.
+    Codes are source code points for AutoKerning or decoded-font glyph IDs.
     """
     positions = []
-    # A later origin for the same glyph ID dominates its earlier occurrences:
-    # every future pair lookup uses the same table row. Bound the state by the
-    # number of glyphs in the font, regardless of line length.
-    rightmost = {}
+    # Both box edges advance monotonically, so expiry positions are ordered.
+    # Retain only glyphs whose nominal advance can still affect a future origin.
+    recent = deque()
     for code in codes:
         if positions:
             previous, previous_x = positions[-1]
             x = previous_x + kerning.advance(previous, code)
-            for earlier, earlier_x in rightmost.items():
-                if (earlier, earlier_x) == (previous, previous_x):
-                    continue
-                # Nominal spacing is an upper bound on any pair advance. Only
-                # glyphs whose boxes still reach this placement need a lookup.
-                if earlier_x + kerning.glyphs[earlier].width + kerning.spacing > x:
+            while recent and recent[0][2] <= x:
+                recent.popleft()
+            for earlier, earlier_x, expiry in recent:
+                if expiry > x:
                     x = max(x, earlier_x + kerning.advance(earlier, code))
         else:
             x = 0
         positions.append((code, x))
-        rightmost[code] = max(x, rightmost.get(code, x))
+        # Other pair constraints may have moved x beyond more expiry positions.
+        # Future origins cannot move left, so these entries can be forgotten.
+        while recent and recent[0][2] <= x:
+            recent.popleft()
+        recent.append((code, x, x + kerning.glyphs[code].width + kerning.spacing))
     return positions
 
 

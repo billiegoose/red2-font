@@ -41,10 +41,17 @@ pairs with no edges within the vertical radius keep their nominal advance.
 
 Tightening also stops before the right glyph's right edge would move inside
 the left glyph's right edge. The final pair advance is
-`max(edge_gap_advance, left.width - right.width)`. When the artwork permits it,
+`max(edge_gap_advance, left.width - right.width, 0)`. The right glyph's left edge
+cannot come before the left glyph's left edge. Because horizontal transparent
+margins are cropped, this means the advance must be nonnegative.
+When the artwork permits it,
 a narrow mark sits completely under the letter, flush with its right edge.
 For example, periods tuck under P/F and an apostrophe tucks above L. Blank
 glyphs retain nominal advances. This constraint can widen the nearest edge gap.
+
+The left-edge constraint prevents a negative comma/4 advance from placing 4
+before the second comma in `#,,4`. Equal left edges are allowed; actual occupied
+pixels still respect the edge-gap rule.
 
 Text layout takes the maximum required position across earlier glyphs:
 `x = max(earlier_x + advance(earlier, next))`. In `P.O.`, O respects both P/O
@@ -54,12 +61,14 @@ other's pair advances, so they do not stack on the same pixels. This requires
 only two-input pair lookups, without a three-input table or character-specific
 exceptions.
 
-The layout state retains only the rightmost origin for each glyph ID: it
-dominates earlier occurrences of that ID because they use the same pair row.
-Storage is bounded by the font's glyph count, rather than line length. Earlier
-glyphs whose nominal right edge plus spacing is already behind the candidate
-position need no pair lookup. State resets at line breaks. Pair previews and
-CSV exports show the independent pair advances; full strings combine their
+The layout state is a queue of recent glyphs. An entry is discarded once
+`earlier_x + earlier.width + spacing <= x`: no pair advance exceeds that nominal
+bound, and future left edges cannot move backward. Both box edges stay in
+reading order, so entries expire from the front of the queue. Only glyphs still
+within reach require pair lookups; there is no map of character occurrences or
+fixed two-glyph cutoff. For example, at spacing 3, `/,<T` still needs the `/`
+constraint after the comma and `<`. State resets at line breaks. Pair previews
+and CSV exports show independent pair advances; full strings combine their
 constraints during layout.
 
 With the default four-pixel gap, P is 14 pixels wide and the period is three.

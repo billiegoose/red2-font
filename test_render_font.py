@@ -1,6 +1,7 @@
 import contextlib
 import csv
 import io
+import random
 import unittest
 import tempfile
 from pathlib import Path
@@ -94,6 +95,17 @@ class KerningTests(unittest.TestCase):
         kern = AutoKerning(glyphs, spacing=3)
         self.assertEqual(kern.advance(32, 65), 7)
 
+    def test_right_left_edge_cannot_precede_left_left_edge(self):
+        comma = glyph(['...'] * 10 + ['###'] * 2)
+        four = glyph(['#........'] + ['........#'] * 11)
+        # The bottom ink allows geometric backtracking, while the right glyph's
+        # top-left pixel makes that backtracking visibly reverse its left edge.
+        for spacing in (0, 1, 2, 4):
+            with self.subTest(spacing=spacing):
+                kern = AutoKerning({44: comma, 52: four}, spacing)
+                self.assertEqual(kern.advance(44, 52), 0)
+                self.assertEqual(layout_line(map(ord, ',4'), kern), [(44, 0), (52, 0)])
+
     def test_small_right_glyph_tucks_flush_with_left_glyph(self):
         glyphs = {ord('P'): glyph(['###########'] + ['#..........'] * 11),
                   ord('.'): glyph(['.'] * 11 + ['#']),
@@ -180,6 +192,37 @@ class KerningTests(unittest.TestCase):
 
 
 class ExampleRenderTest(unittest.TestCase):
+    def test_recent_queue_preserves_constraints_beyond_two_glyphs(self):
+        directory = Path(__file__).resolve().parent
+        glyphs = load_glyphs(directory / 'RED2 Font.aseprite', 'aseprite')
+        examples = ((0, '"//_', [0, 0, 3, 7]),
+                    (1, '#``@', [0, 7, 12, 13]),
+                    (2, '+``+', [0, 6, 12, 13]),
+                    (3, '/,<T', [0, 10, 11, 16]))
+        for spacing, text, expected in examples:
+            with self.subTest(spacing=spacing, text=text):
+                placements = layout_line(map(ord, text), AutoKerning(glyphs, spacing))
+                self.assertEqual([x for _, x in placements], expected)
+
+    def test_recent_queue_matches_all_prior_glyphs_across_spacings(self):
+        directory = Path(__file__).resolve().parent
+        glyphs = load_glyphs(directory / 'RED2 Font.aseprite', 'aseprite')
+        rng = random.Random(0)
+        samples = [list(map(ord, text)) for text in
+                   ('P...O', "L''.T", '#,,,4', 'P. O', 'PO' * 100, EXAMPLE_TEXT.replace('\n', ''))]
+        samples.extend(rng.choices(sorted(glyphs), k=60) for _ in range(20))
+        for spacing in (0, 1, 2, 3, 4, 5, 8):
+            kern = AutoKerning(glyphs, spacing)
+            for codes in samples:
+                with self.subTest(spacing=spacing, text=''.join(map(chr, codes))):
+                    # Reference placement keeps all history, with no pruning.
+                    expected = []
+                    for code in codes:
+                        x = max((left_x + kern.advance(left, code)
+                                 for left, left_x in expected), default=0)
+                        expected.append((code, x))
+                    self.assertEqual(layout_line(iter(codes), kern), expected)
+
     def test_real_font_matches_approved_punctuation_placements(self):
         directory = Path(__file__).resolve().parent
         glyphs = load_glyphs(directory / 'RED2 Font.aseprite', 'aseprite')
@@ -193,8 +236,29 @@ class ExampleRenderTest(unittest.TestCase):
         for left in glyphs:
             for right in glyphs:
                 with self.subTest(left=chr(left), right=chr(right)):
+                    self.assertGreaterEqual(kern.advance(left, right), 0)
                     self.assertGreaterEqual(kern.advance(left, right) + glyphs[right].width,
                                             glyphs[left].width)
+
+    def test_comma_sequences_keep_left_edges_in_reading_order(self):
+        directory = Path(__file__).resolve().parent
+        glyphs = load_glyphs(directory / 'RED2 Font.aseprite', 'aseprite')
+        kern = AutoKerning(glyphs)
+        expected = {'#,4': [0, 12, 16], '#,,4': [0, 12, 19, 19],
+                    '#,,,4': [0, 12, 19, 26, 26]}
+        self.assertEqual(kern.advance(ord(','), ord('4')), 0)
+        for text, origins in expected.items():
+            with self.subTest(text=text):
+                placements = layout_line(map(ord, text), kern)
+                self.assertEqual([x for _, x in placements], origins)
+                self.assertEqual(origins, sorted(origins))
+                occupied = set()
+                for code, origin in placements:
+                    image = glyphs[code]
+                    pixels = {(origin + x, y) for y in range(image.height)
+                              for x in range(image.width) if image.getpixel((x, y))[3]}
+                    self.assertFalse(occupied & pixels)
+                    occupied.update(pixels)
 
     def test_repeated_and_partially_overlapping_marks_respect_all_pair_bounds(self):
         directory = Path(__file__).resolve().parent
