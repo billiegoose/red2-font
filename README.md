@@ -39,6 +39,35 @@ The threshold between pixel centers is `spacing + 1`, preserving the convention
 that 3 means three empty pixels on a straight horizontal row. Blank glyphs and
 pairs with no edges within the vertical radius keep their nominal advance.
 
+Tightening also stops before the right glyph's right edge would move inside
+the left glyph's right edge. The final pair advance is
+`max(edge_gap_advance, left.width - right.width)`. When the artwork permits it,
+a narrow mark sits completely under the letter, flush with its right edge.
+For example, periods tuck under P/F and an apostrophe tucks above L. Blank
+glyphs retain nominal advances. This constraint can widen the nearest edge gap.
+
+Text layout takes the maximum required position across earlier glyphs:
+`x = max(earlier_x + advance(earlier, next))`. In `P.O.`, O respects both P/O
+and period/O spacing. In `L'.`, the apostrophe aligns with L's right edge and
+the period keeps the same position as in `L.`. Repeated marks also respect each
+other's pair advances, so they do not stack on the same pixels. This requires
+only two-input pair lookups, without a three-input table or character-specific
+exceptions.
+
+The layout state retains only the rightmost origin for each glyph ID: it
+dominates earlier occurrences of that ID because they use the same pair row.
+Storage is bounded by the font's glyph count, rather than line length. Earlier
+glyphs whose nominal right edge plus spacing is already behind the candidate
+position need no pair lookup. State resets at line breaks. Pair previews and
+CSV exports show the independent pair advances; full strings combine their
+constraints during layout.
+
+With the default four-pixel gap, P is 14 pixels wide and the period is three.
+The period therefore sits at x=11, ending flush with P at x=14. O's origin is
+`max(0 + advance(P, O), 11 + advance(period, O)) = max(18, 16) = 18`, the same
+position as in `PO`. Similarly, the apostrophe in `L'.` sits at x=11, while both
+L/period and apostrophe/period require the period at x=18, matching `L.`.
+
 ```sh
 python render_font.py --pairs --output kerning_pairs.png
 python render_font.py "AVATAR" --spacing 2
@@ -69,3 +98,90 @@ the project directory. Run it on its own with:
 ```sh
 python -m unittest test_render_font.ExampleRenderTest
 ```
+
+## Cropped glyphs and metadata
+
+Consumers can import the existing loader directly. It requires Pillow and an
+Aseprite executable, using the same environment as the renderer:
+
+```python
+from pathlib import Path
+from render_font import load_glyphs, AutoKerning, horizontal_ink_metrics
+
+# Run from this checkout, or supply an absolute source path.
+glyphs = load_glyphs(Path("RED2 Font.aseprite"), "aseprite", layer="Glyphs")
+kerning = AutoKerning(glyphs, spacing=4)
+
+output = Path("glyphs")
+output.mkdir(exist_ok=True)
+for code, image in sorted(glyphs.items()):
+    image.save(output / f"{code:03d}.png")
+    print({
+        "codepoint": code,
+        "character": chr(code),
+        "width": image.width,
+        "height": image.height,
+        "ink_bounds": image.getchannel("A").getbbox(),
+        "horizontal_ink_metrics": horizontal_ink_metrics(image),
+    })
+
+left, right = ord("A"), ord("V")
+advance = kerning.advance(left, right)
+adjustment = advance - glyphs[left].width - kerning.spacing
+print("A to V:", advance, "pixels; adjustment:", adjustment)
+```
+
+`load_glyphs` returns a dictionary mapping integer Unicode code points to
+independent Pillow RGBA images. The PNGs preserve transparent pixels. A glyph
+exists when its code point is in the dictionary; `glyphs.get(code)` returns
+`None` for an unsupported character. The loader does not limit the font to ASCII.
+Slice userdata is the character mapping: `c=65` means `A`, for example. Slice
+names are not used to identify characters. Missing or duplicate mappings,
+invalid Unicode scalars, and invalid frame-zero bounds are rejected.
+
+The loader exports frame 0 of the selected artwork layer and uses each slice's
+frame-zero bounds. Slices without a frame-zero key are not loaded. For a glyph
+with ink, it removes only the fully transparent columns to the left and right.
+It preserves the entire slice height, including transparent top and bottom rows.
+An entirely transparent glyph keeps its original slice width and height, so
+space still has a usable width. Pixel occupancy is determined by nonzero alpha,
+not RGB color; `(0, 0)` is the cropped left edge and the original slice top.
+
+The available metrics are:
+
+| Metric | How to obtain it | Meaning |
+| --- | --- | --- |
+| Character code | Dictionary key | Explicit slice userdata code point |
+| Cropped dimensions | `image.width`, `image.height` | Artwork extent, with vertical slice metrics preserved |
+| Occupied bounds | `image.getchannel("A").getbbox()` | `(left, top, right, bottom)` with exclusive right/bottom; `None` for blank glyphs |
+| Right ink edge and median | `horizontal_ink_metrics(image)` | `(exclusive_right_edge, upper_median_ink_x)`; `None` for blank glyphs |
+| Pair advance | `kerning.advance(left, right)` | Right glyph's x origin relative to the left glyph's origin |
+| Pair adjustment | Advance minus left width and spacing | Signed change from nominal placement; zero means no tightening |
+
+The median is weighted by actual occupied pixels, not by occupied columns. It is
+available for artwork inspection; kerning uses the right-edge rule above. Pair
+order matters; compute both directions if needed. To obtain every pair, iterate over `sorted(glyphs)`
+for both left and right and call `advance`. The existing `--pairs` command also
+exports nonzero adjustments to the ordinary CSV described above.
+
+Width is not a universal advance: pair advance depends on the next glyph and
+chosen spacing, and a full string can impose additional earlier-glyph bounds.
+Consumers can call `layout_line(codes, kerning)` with supported code points to
+obtain `(codepoint, x)` placements matching the renderer. The renderer uses the
+maximum glyph height plus four pixels for line advance. That is a layout
+convention, not a baseline stored in the
+source. The returned dictionary does not expose slice names, original sheet
+coordinates, or removed horizontal margins. If those are needed, export and
+retain the original Aseprite slice metadata separately:
+
+```sh
+aseprite -b --list-slices --layer Glyphs --frame-range 0,0 \
+  "RED2 Font.aseprite" --sheet sheet.png --data slices.json
+```
+
+The original slice metadata is under `meta.slices` in `slices.json`; the `data`
+field holds the character mapping and `keys` holds frame-specific bounds in
+sheet coordinates. Keep the sheet untrimmed so those coordinates remain valid.
+The Python loader uses temporary export files and returns the images after
+those files have been removed. Downstream projects choose their own storage
+and hardware layout from these images and metrics.

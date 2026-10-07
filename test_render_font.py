@@ -8,7 +8,9 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from render_font import AutoKerning, compose, render
+from render_font import (
+    AutoKerning, compose, horizontal_ink_metrics, layout_line, load_glyphs, render,
+)
 
 
 EXAMPLE_TEXT = """THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG.
@@ -92,6 +94,59 @@ class KerningTests(unittest.TestCase):
         kern = AutoKerning(glyphs, spacing=3)
         self.assertEqual(kern.advance(32, 65), 7)
 
+    def test_small_right_glyph_tucks_flush_with_left_glyph(self):
+        glyphs = {ord('P'): glyph(['###########'] + ['#..........'] * 11),
+                  ord('.'): glyph(['.'] * 11 + ['#']),
+                  ord('O'): glyph(['###'] * 12)}
+        for spacing in (0, 1, 2, 4):
+            with self.subTest(spacing=spacing):
+                kern = AutoKerning(glyphs, spacing)
+                direct = kern.advance(ord('P'), ord('O'))
+                placements = layout_line(map(ord, 'P.O.'), kern)
+                self.assertEqual(placements[1][1], kern.advance(ord('P'), ord('.')))
+                self.assertEqual(placements[1][1], glyphs[ord('P')].width - glyphs[ord('.')].width)
+                self.assertGreaterEqual(placements[2][1], direct)
+                # Check the actual pixels, including the nonadjacent P and O.
+                occupied = set()
+                for code, x in placements:
+                    image = glyphs[code]
+                    pixels = {(x + xx, yy) for yy in range(image.height)
+                              for xx in range(image.width) if image.getpixel((xx, yy))[3]}
+                    self.assertFalse(occupied & pixels)
+                    occupied.update(pixels)
+                image = compose('P.O.', glyphs, kern)
+                self.assertEqual(sum(image.getpixel((x, y))[:3] == (255, 255, 255)
+                                     for y in range(image.height) for x in range(image.width)),
+                                 len(occupied))
+
+    def test_repeated_marks_advance_instead_of_stacking(self):
+        glyphs = {ord('P'): glyph(['#####'] + ['#....'] * 11),
+                  ord('.'): glyph(['.'] * 11 + ['#']),
+                  ord('O'): glyph(['###'] * 12)}
+        placements = layout_line(map(ord, 'P...O'), AutoKerning(glyphs, spacing=0))
+        self.assertEqual([x for _, x in placements], [0, 4, 5, 6, 7])
+
+    def test_horizontal_ink_metrics_count_pixels_not_box_width_or_rows(self):
+        # Most of the right ink is in column zero, although the box is wide.
+        right = glyph(['#.......'] * 9 + ['.......#'])
+        self.assertEqual(horizontal_ink_metrics(right), (8, 0))
+
+    def test_horizontal_ink_metrics_handle_odd_even_counts_and_margins(self):
+        for rows, median in ((['#.......', '......##'], 6),
+                             (['##......', '......##'], 6),
+                             (['..#.....', '....##..'], 4)):
+            with self.subTest(rows=rows):
+                right = glyph(rows)
+                self.assertEqual(horizontal_ink_metrics(right)[1], median)
+        self.assertIsNone(horizontal_ink_metrics(glyph(['....'])))
+
+    def test_layout_keeps_spaces_and_resets_at_line_breaks(self):
+        glyphs = {ord('A'): glyph(['##']), ord(' '): glyph(['....'])}
+        kern = AutoKerning(glyphs, spacing=3)
+        self.assertEqual(layout_line(map(ord, 'A A'), kern), [(65, 0), (32, 5), (65, 12)])
+        self.assertEqual(layout_line([], kern), [])
+        self.assertEqual(compose('A A\nA', glyphs, kern).size, (14, 6))
+
     def test_skip_warning_and_line_break(self):
         glyphs = {65: glyph(["##", "##"])}
         warnings = io.StringIO()
@@ -125,6 +180,33 @@ class KerningTests(unittest.TestCase):
 
 
 class ExampleRenderTest(unittest.TestCase):
+    def test_real_font_matches_approved_punctuation_placements(self):
+        directory = Path(__file__).resolve().parent
+        glyphs = load_glyphs(directory / 'RED2 Font.aseprite', 'aseprite')
+        kern = AutoKerning(glyphs)
+        approved = {'P.': [0, 11], 'F.': [0, 11], 'L.': [0, 18],
+                    "L'.": [0, 11, 18], 'P.O.': [0, 11, 18, 39], 'F.T': [0, 11, 18]}
+        for text, expected in approved.items():
+            with self.subTest(text=text):
+                placements = layout_line(map(ord, text), kern)
+                self.assertEqual([x for _, x in placements], expected)
+        for left in glyphs:
+            for right in glyphs:
+                with self.subTest(left=chr(left), right=chr(right)):
+                    self.assertGreaterEqual(kern.advance(left, right) + glyphs[right].width,
+                                            glyphs[left].width)
+
+    def test_repeated_and_partially_overlapping_marks_respect_all_pair_bounds(self):
+        directory = Path(__file__).resolve().parent
+        glyphs = load_glyphs(directory / 'RED2 Font.aseprite', 'aseprite')
+        kern = AutoKerning(glyphs)
+        for text in ('T.T', 'P...O', "L''.", "L'.T", 'F.-T', 'P. O', 'P.4', 'PO' * 100):
+            with self.subTest(text=text):
+                placements = layout_line(map(ord, text), kern)
+                for index, (right, x) in enumerate(placements):
+                    for left, left_x in placements[:index]:
+                        self.assertGreaterEqual(x, left_x + kern.advance(left, right))
+
     def test_example_render(self):
         """Render the real font sample and leave example.png for the README."""
         directory = Path(__file__).resolve().parent

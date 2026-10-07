@@ -101,8 +101,25 @@ def contours(glyph):
     return rows
 
 
+def horizontal_ink_metrics(glyph):
+    """Return the exclusive right ink edge and upper median ink column."""
+    alpha = glyph.getchannel("A")
+    counts = [sum(bool(alpha.getpixel((x, y))) for y in range(glyph.height))
+              for x in range(glyph.width)]
+    total = sum(counts)
+    if not total:
+        return None
+    remaining = total // 2
+    for x, count in enumerate(counts):
+        remaining -= count
+        if remaining < 0:
+            median = x
+            break
+    return max(x for x, count in enumerate(counts) if count) + 1, median
+
+
 class AutoKerning:
-    """Choose the integer placement whose nearby-edge gap is closest to the target."""
+    """Choose the nearest edge gap, keeping glyph right edges in reading order."""
 
     def __init__(self, glyphs, spacing=4):
         self.glyphs = glyphs
@@ -121,6 +138,9 @@ class AutoKerning:
         nominal = self.glyphs[left].width + self.spacing
         if not a or not b:
             return nominal
+        # Allow complete nesting only up to flush right alignment. A narrow
+        # glyph can share the left glyph's width, but cannot end inside it.
+        minimum = self.glyphs[left].width - self.glyphs[right].width
         # spacing empty pixels along a straight row means spacing + 1
         # between pixel centers. Compare facing edges within +/- spacing rows;
         # more distant rows cannot violate this clearance on the integer grid.
@@ -137,6 +157,8 @@ class AutoKerning:
         previous_distance = distance(advance)
         while True:
             closer = advance - 1
+            if closer < minimum:
+                return advance
             # Preserve left-to-right contour order; spacing zero must not overlap.
             if any(closer + dx <= 0 for dx, _ in neighbors):
                 return advance
@@ -148,6 +170,35 @@ class AutoKerning:
                 return advance
             advance = closer
             previous_distance = current_distance
+
+
+def layout_line(codes, kerning):
+    """Place glyphs with pair clearance from every earlier glyph in the line.
+
+    ``kerning`` supplies glyph widths, spacing, and ordered pair advances. Codes
+    are source code points for AutoKerning or glyph IDs for a decoded font.
+    """
+    positions = []
+    # A later origin for the same glyph ID dominates its earlier occurrences:
+    # every future pair lookup uses the same table row. Bound the state by the
+    # number of glyphs in the font, regardless of line length.
+    rightmost = {}
+    for code in codes:
+        if positions:
+            previous, previous_x = positions[-1]
+            x = previous_x + kerning.advance(previous, code)
+            for earlier, earlier_x in rightmost.items():
+                if (earlier, earlier_x) == (previous, previous_x):
+                    continue
+                # Nominal spacing is an upper bound on any pair advance. Only
+                # glyphs whose boxes still reach this placement need a lookup.
+                if earlier_x + kerning.glyphs[earlier].width + kerning.spacing > x:
+                    x = max(x, earlier_x + kerning.advance(earlier, code))
+        else:
+            x = 0
+        positions.append((code, x))
+        rightmost[code] = max(x, rightmost.get(code, x))
+    return positions
 
 
 def compose(text, glyphs, kerning):
@@ -163,13 +214,9 @@ def compose(text, glyphs, kerning):
     placements = []
     width = 1
     for line in lines:
-        x = 0
-        positions = []
-        for index, code in enumerate(line):
-            positions.append((code, x))
+        positions = layout_line(line, kerning)
+        for code, x in positions:
             width = max(width, x + glyphs[code].width)
-            if index + 1 < len(line):
-                x += kerning.advance(code, line[index + 1])
         placements.append(positions)
     line_advance = height + 4
     image = Image.new("RGBA", (width, (len(lines) - 1) * line_advance + height), (0, 0, 0, 255))
