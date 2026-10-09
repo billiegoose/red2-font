@@ -4,6 +4,31 @@ I felt like designing a font, so I did.
 
 ![Example render](./example.png)
 
+To preview simulated anti-aliasing without changing the source artwork:
+
+```sh
+python simulate_antialiasing.py
+```
+
+This writes `previews/antialiasing.png` and a labeled before-and-after study at
+`previews/antialiasing-comparison.png`, including enlarged pixel details. It
+infers diagonal contours with three Scale2x passes and samples their coverage
+back to the original size. This approximates smoother edges from the bitmap;
+vector outlines would allow more precise anti-aliasing. The normal renderer
+and Aseprite artwork are unchanged.
+
+The selected compiler output is the fitted palette **0, 59, 198, 255** in
+`previews/antialiasing-2bit-fitted.png`. See [ANTIALIASING.md](./ANTIALIASING.md)
+for a minimal two-color → four-color glyph example, and
+[antialias_font.py](./antialias_font.py) for its implementation. The preview script
+regenerates this selected version too.
+
+For comparison, the script also exports packed 2-bit PNGs using four equally spaced RGB shades
+(`antialiasing-2bit.png`) and four equally spaced CIELAB lightness levels
+(`antialiasing-2bit-perceptual.png`). The latter uses sRGB grays 0, 78, 162, 255
+and quantizes to the nearest perceptual lightness without dithering. Compare
+them in `previews/antialiasing-perceptual-comparison.png`.
+
 Render the sliced glyphs with Python and Aseprite:
 
 ```sh
