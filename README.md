@@ -4,6 +4,66 @@ I felt like designing a font, so I did.
 
 ![Example render](./example.png)
 
+## Web font (WOFF2 and TrueType)
+
+Export this Aseprite bitmap font as ordinary, scalable outline fonts with the
+FPGA's two-glyph-lookbehind kerning encoded in OpenType `GSUB` (`calt`) and
+`GPOS` (`kern`) features:
+
+```sh
+python -m pip install -r requirements.txt
+python export_web_font.py
+```
+
+This generates `dist/RED2-Regular.woff2`, `dist/RED2-Regular.ttf`,
+`dist/red2-font.css`, and `dist/demo.html`. The generated `dist/` directory is
+ignored by Git; rerun the exporter after editing the Aseprite artwork. The
+exporter also accepts `--source`, `--aseprite`, `--layer`, `--spacing`, and
+`--output-dir` overrides, mirroring the normal renderer.
+
+Copy the generated font files and `red2-font.css` into the same directory on
+your website. The stylesheet contains the `@font-face` declaration and a
+`.red2` class, so your HTML can simply use:
+
+```html
+<link rel="stylesheet" href="/fonts/red2-font.css">
+<p class="red2">HELLO, WORLD! AVATAR 0123456789</p>
+```
+
+At `font-size: 32px`, one source pixel maps to one CSS pixel. The class enables
+OpenType kerning and uses a 36px line height (32 source rows + 4px). Text
+color, font size, backgrounds, and layout are controlled with regular CSS.
+Unlike raster images, the resulting font is scalable, although browser
+antialiasing can soften its pixel edges at fractional or non-native sizes.
+The source contains 69 glyphs; unsupported characters use the browser's
+fallback font. A generated `demo.html` shows the font in use.
+
+**Contextual kerning:** Each successive character is placed at the maximum
+position required by the preceding two glyphs, exactly as the FPGA renderer
+does. The exporter compiles this two-glyph history into a finite-state machine
+with 160 states: 69 original glyphs and 91 invisible glyph alternates. OpenType
+`calt` (contextual substitution) carries that state along the text, and `kern`
+(GPOS pair positioning) applies its advance. Both features must be enabled;
+the generated CSS enables them explicitly. For example, browser shaping places
+`P.O.` at `[0, 11, 18, 39]`, matching the Python renderer rather than the
+`[0, 11, 16, 37]` from ordinary adjacent-pair kerning. There are 3,686
+nonzero state-dependent GPOS pair rules; the resulting WOFF2 is roughly 5.7 KB.
+
+This exactness depends on a property of the pair-advance table: an exhaustive
+four-character check must prove that older glyphs cannot impose a stronger
+constraint than the previous two. The exporter runs this proof and refuses to
+build if it fails. On the current artwork it passes at spacing 4 (the FPGA
+default), 5, and 8, but fails at spacing 0–3, where the Python renderer can
+need more than two preceding glyphs. Changing the artwork or spacing therefore
+cannot silently produce a font advertised as pixel-layout equivalent.
+
+To run the web-font regression tests, including bitmap rasterization, all
+adjacent pairs, and 2,000 randomized multi-character HarfBuzz shaping checks:
+
+```sh
+python -m unittest test_export_web_font.py
+```
+
 To preview simulated anti-aliasing without changing the source artwork:
 
 ```sh
