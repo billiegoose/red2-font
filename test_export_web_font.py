@@ -158,20 +158,22 @@ class RealFontExportTests(unittest.TestCase):
 
     def test_contextual_state_machine_is_compact_and_encoded(self):
         base, states, transitions = build_kerning_states(self.glyphs, self.kerning)
-        self.assertEqual(len(base), 69)
-        self.assertEqual(len(states), 160)
+        self.assertEqual(len(base), 73)
+        self.assertEqual(len(states), 197)
         self.assertEqual(len(transitions), len(states) * len(base))
         self.assertEqual(sum(target != base[right]
-                             for (state, right), (target, _) in transitions.items()), 147)
+                             for (state, right), (target, _) in transitions.items()), 222)
         expected_rules = sum(step != self.glyphs[state[0]].width + 4
                              for (state, right), (_, step) in transitions.items())
         self.assertEqual(self.rule_count, expected_rules)
-        self.assertEqual(self.rule_count, 3686)
+        self.assertEqual(self.rule_count, 5164)
         for file in (self.ttf, self.woff2):
             with self.subTest(format=file.suffix):
                 font = TTFont(file)
                 self.assertEqual(font["head"].unitsPerEm, 2048)
                 self.assertEqual(len(font.getBestCmap()), len(self.glyphs))
+                for character in "▲▶▼◀":
+                    self.assertEqual(font.getBestCmap()[ord(character)], glyph_name(ord(character)))
                 self.assertEqual(font["maxp"].numGlyphs, 1 + len(states))
                 self.assertEqual(len(kerning_pairs(font)), expected_rules)
                 self.assertIn("GSUB", font)
@@ -199,6 +201,7 @@ class RealFontExportTests(unittest.TestCase):
             "P.O.", "P.O.O.", "P...O", "F.T", "L'.", "L''.T", "#,,4",
             "/_\\`", "/\\`", "AVATAR", "HELLO, WORLD!", "PO" * 100,
             "P...O" * 100, "#,,4" * 100,
+            "▲▶▼◀", "A▲B▶C▼D◀E", "P.▲O▼.", "◀▶▲▼" * 100,
         ]
         rng = random.Random(34875)
         codes = sorted(self.glyphs)

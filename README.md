@@ -30,24 +30,57 @@ your website. The stylesheet contains the `@font-face` declaration and a
 <p class="red2">HELLO, WORLD! AVATAR 0123456789</p>
 ```
 
-At `font-size: 32px`, one source pixel maps to one CSS pixel. The class enables
-OpenType kerning and uses a 36px line height (32 source rows + 4px). Text
-color, font size, backgrounds, and layout are controlled with regular CSS.
-Unlike raster images, the resulting font is scalable, although browser
-antialiasing can soften its pixel edges at fractional or non-native sizes.
-The source contains 69 glyphs; unsupported characters use the browser's
-fallback font. A generated `demo.html` shows the font in use.
+### Recommended CSS for sharp rendering
+
+The generated `red2-font.css` already includes these recommended settings in
+its `.red2` class:
+
+```css
+.red2 {
+  font-family: "RED2", monospace;
+  font-size: 32px;
+  font-weight: 400;
+  font-synthesis: none;
+  letter-spacing: 0;
+  line-height: 1.125; /* 36px: 32 glyph rows + 4px line gap */
+  font-kerning: normal;
+  font-variant-ligatures: contextual;
+  font-feature-settings: "kern" 1, "calt" 1;
+}
+```
+
+For the crispest rendering, use **32px** with **400/normal weight**, and avoid
+fractional CSS-pixel positioning, transforms that scale text, and non-100%
+browser zoom. At 32px, one source bitmap pixel corresponds to one CSS pixel;
+`letter-spacing: 0` preserves the intended kerning advances, while
+`font-synthesis: none` prevents the browser from inventing bold or italic
+outlines. **Keep both `kern` and `calt` enabled:** contextual substitution is
+required to reproduce the FPGA's two-glyph-lookbehind kerning.
+
+These settings improve the chances of pixel-aligned text, but cannot guarantee
+bitmap-identical output. Browser/OS font rasterizers may still anti-alias the
+vector outlines, particularly at fractional positions, non-native sizes,
+non-integer display scaling, or zoom levels other than 100%. The exported
+outlines have no TrueType hinting. `image-rendering: pixelated` does **not**
+control font rasterization and will not fix blurry text. For guaranteed hard
+bitmap pixels, render the original bitmap glyphs as images instead.
+
+Text color, backgrounds, and layout remain regular CSS properties. The source
+contains 73 glyphs, including four Unicode triangle characters:
+`▲` (U+25B2), `▶` (U+25B6), `▼` (U+25BC), and `◀` (U+25C0).
+Unsupported characters use the browser's fallback font. A generated
+`demo.html` shows the font in use.
 
 **Contextual kerning:** Each successive character is placed at the maximum
 position required by the preceding two glyphs, exactly as the FPGA renderer
 does. The exporter compiles this two-glyph history into a finite-state machine
-with 160 states: 69 original glyphs and 91 invisible glyph alternates. OpenType
+with 197 states: 73 original glyphs and 124 invisible glyph alternates. OpenType
 `calt` (contextual substitution) carries that state along the text, and `kern`
 (GPOS pair positioning) applies its advance. Both features must be enabled;
 the generated CSS enables them explicitly. For example, browser shaping places
 `P.O.` at `[0, 11, 18, 39]`, matching the Python renderer rather than the
-`[0, 11, 16, 37]` from ordinary adjacent-pair kerning. There are 3,686
-nonzero state-dependent GPOS pair rules; the resulting WOFF2 is roughly 5.7 KB.
+`[0, 11, 16, 37]` from ordinary adjacent-pair kerning. There are 5,164 nonzero state-dependent GPOS pair rules, and the resulting
+WOFF2 is roughly 6.9 KB.
 
 This exactness depends on a property of the pair-advance table: an exhaustive
 four-character check must prove that older glyphs cannot impose a stronger
@@ -99,16 +132,26 @@ python render_font.py "0123456789ABCD"
 ```
 
 This runs `aseprite` from PATH, exports the first frame and slice metadata to
-temporary files, maps slice userdata such as `c=65` to character code points,
+temporary files, maps slice userdata such as `c=65`, `c=U+25B2`, or `U+25B2`
+to Unicode code points,
 and writes a black-background `output.png` in the current directory. It exports only
 the `Glyphs` layer, excluding the Background guide lines. Transparent margins are
 cropped horizontally; vertical slice metrics and blank space widths are preserved.
 Use `--aseprite /path/to/aseprite`, `--source font.aseprite`, or
 `--output preview.png` to override the defaults.
 
-Every slice must have explicit `c=<decimal code point>` userdata, and all `c`
-values must be unique. Rendering reports all validation errors before composing
-the output.
+Every slice must have explicit code-point userdata: `c=<decimal>` for the
+existing ASCII characters, or `c=U+<hex>` / `U+<hex>` for Unicode. For example,
+`c=65` and `c=U+0041` both mean `A`; `U+25B2` means `▲`. The parser checks
+Unicode scalar validity and rejects duplicate code points even when written
+in different notations. Rendering reports all validation errors before
+composing the output.
+
+To render the four Unicode triangles directly:
+
+```sh
+python render_font.py "◀ ▶ ▲ ▼" --output triangles.png
+```
 
 Characters without a matching slice are skipped without adding spacing, with a
 warning printed to the terminal for each distinct unrecognized character. Empty
@@ -229,8 +272,9 @@ print("A to V:", advance, "pixels; adjustment:", adjustment)
 independent Pillow RGBA images. The PNGs preserve transparent pixels. A glyph
 exists when its code point is in the dictionary; `glyphs.get(code)` returns
 `None` for an unsupported character. The loader does not limit the font to ASCII.
-Slice userdata is the character mapping: `c=65` means `A`, for example. Slice
-names are not used to identify characters. Missing or duplicate mappings,
+Slice userdata is the character mapping: `c=65` means `A`, while
+`c=U+25C0` means `◀` and bare `U+25B2` means `▲`. Decimal and Unicode hex
+notation both work. Slice names are not used to identify characters. Missing or duplicate mappings,
 invalid Unicode scalars, and invalid frame-zero bounds are rejected.
 
 The loader exports frame 0 of the selected artwork layer and uses each slice's

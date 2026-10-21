@@ -293,11 +293,13 @@ CSS = '''/* 1 artwork pixel = 1 CSS pixel at font-size: 32px. */
 .red2 {
   font-family: "RED2", monospace;
   font-size: 32px;
+  font-weight: 400;
+  font-synthesis: none;
+  letter-spacing: 0;
   line-height: 1.125; /* Source height 32px + renderer line gap 4px. */
   font-kerning: normal;
   font-variant-ligatures: contextual;
   font-feature-settings: "kern" 1, "calt" 1;
-  font-synthesis: none;
   white-space: pre-wrap;
 }
 '''
@@ -320,6 +322,8 @@ DEMO = '''<!doctype html>
   <p class="red2 sample">THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG.
 0123456789  AVATAR  WAVY
 P.O.  L'.  #,,4
+UNICODE TRIANGLES: ◀ ▶ ▲ ▼
+MIXED TEXT: A▲B▶C▼D◀E
 HELLO, WORLD!</p>
   <p style="color: #ffaf5f" class="red2">PIXEL OUTLINES</p>
 </body>

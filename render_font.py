@@ -15,21 +15,38 @@ import tempfile
 from PIL import Image
 
 
+def parse_slice_codepoint(data):
+    """Parse Aseprite userdata as decimal c=65 or Unicode U+25B2/c=U+25B2.
+
+    The U+ spelling uses hexadecimal; a bare decimal value is intentionally
+    not accepted, preserving the requirement for explicit decimal mappings.
+    """
+    value = data.strip()
+    hex_match = re.fullmatch(r"(?:c\s*=\s*)?U\+([0-9a-f]{1,6})", value, re.IGNORECASE)
+    decimal_match = re.fullmatch(r"c\s*=\s*(\d+)", value)
+    if hex_match:
+        return int(hex_match[1], 16)
+    if decimal_match:
+        return int(decimal_match[1], 10)
+    raise ValueError("expected c=<decimal>, c=U+<hex>, or U+<hex> userdata")
+
+
 def validate_slices(slices):
-    """Require explicit, unique c=<decimal code point> userdata on every slice."""
+    """Require explicit, unique Unicode scalar mappings on every slice."""
     codes = {}
     errors = []
     for item in slices:
         name = item["name"]
-        match = re.fullmatch(r"c\s*=\s*(\d+)", item.get("data", "").strip())
-        if not match:
-            errors.append(f"Slice {name!r} must have userdata c=<decimal code point>.")
+        try:
+            code = parse_slice_codepoint(item.get("data", ""))
+        except ValueError as error:
+            errors.append(f"Slice {name!r}: {error}.")
             continue
-        code = int(match[1])
         if not 0 <= code <= 0x10FFFF or 0xD800 <= code <= 0xDFFF:
-            errors.append(f"Slice {name!r} has invalid code point {code}.")
+            errors.append(f"Slice {name!r} has invalid code point U+{code:X}.")
+            continue
         if code in codes:
-            errors.append(f"Duplicate c={code}: slices {codes[code]!r} and {name!r}.")
+            errors.append(f"Duplicate U+{code:04X}: slices {codes[code]!r} and {name!r}.")
         else:
             codes[code] = name
     if errors:
@@ -67,7 +84,7 @@ def load_glyphs(source, aseprite, layer="Glyphs"):
         with Image.open(sheet) as exported:
             pixels = exported.convert("RGBA")
         for item in slices:
-            code = int(item["data"].split("=", 1)[1].strip())
+            code = parse_slice_codepoint(item["data"])
             keys = [key for key in item["keys"] if key["frame"] == 0]
             if not keys:
                 continue

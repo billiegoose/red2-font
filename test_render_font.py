@@ -10,7 +10,8 @@ from unittest.mock import patch
 from PIL import Image
 
 from render_font import (
-    AutoKerning, compose, horizontal_ink_metrics, layout_line, load_glyphs, render,
+    AutoKerning, compose, horizontal_ink_metrics, layout_line, load_glyphs,
+    parse_slice_codepoint, render, validate_slices,
 )
 
 
@@ -31,6 +32,57 @@ def glyph(rows):
             if pixel == "#":
                 image.putpixel((x, y), (255, 255, 255, 255))
     return image
+
+
+class UnicodeSliceTests(unittest.TestCase):
+    def test_parse_decimal_and_u_plus_unicode_notation(self):
+        cases = {
+            "c=65": 65,
+            "c = 65": 65,
+            "c=U+25B2": 0x25B2,
+            "c=U+25B6": 0x25B6,
+            "c=U+25BC": 0x25BC,
+            "c=U+25C0": 0x25C0,
+            "U+25B2": 0x25B2,
+            " c = u+25b2 ": 0x25B2,
+            "U+1F600": 0x1F600,
+        }
+        for value, code in cases.items():
+            with self.subTest(value=value):
+                self.assertEqual(parse_slice_codepoint(value), code)
+
+    def test_rejects_malformed_out_of_range_surrogates_and_duplicates(self):
+        for value in ("", "65", "c=", "c=0x25B2", "U+NOTHEX", "c=U+25B2garbage"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    validate_slices([{"name": "invalid", "data": value}])
+        for value in ("U+110000", "c=55296", "U+D800", "c=1114112"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "invalid code point"):
+                    validate_slices([{"name": "invalid", "data": value}])
+        with self.assertRaisesRegex(ValueError, "Duplicate U\\+25B2"):
+            validate_slices([
+                {"name": "first", "data": "U+25B2"},
+                {"name": "second", "data": "c=U+25B2"},
+            ])
+        with self.assertRaisesRegex(ValueError, "Duplicate U\\+0041"):
+            validate_slices([
+                {"name": "ASCII", "data": "c=65"},
+                {"name": "Unicode", "data": "c=U+0041"},
+            ])
+
+    def test_load_and_render_all_four_real_unicode_triangles(self):
+        glyphs = load_glyphs(Path(__file__).resolve().parent / "RED2 Font.aseprite", "aseprite")
+        triangles = "▲▶▼◀"
+        self.assertTrue(all(ord(character) in glyphs for character in triangles))
+        self.assertEqual(len(glyphs), 73)
+        warnings = io.StringIO()
+        with contextlib.redirect_stderr(warnings):
+            image = compose("A▲▶▼◀Z", glyphs, AutoKerning(glyphs))
+        self.assertEqual(warnings.getvalue(), "")
+        self.assertEqual(image.height, 32)
+        self.assertGreater(image.width, 0)
+        self.assertTrue(image.getchannel("R").getextrema()[1] > 0)
 
 
 class KerningTests(unittest.TestCase):
