@@ -10,6 +10,7 @@ import argparse
 from collections import defaultdict
 from pathlib import Path
 import subprocess
+import unicodedata
 
 from fontTools.fontBuilder import FontBuilder
 from fontTools.feaLib.builder import addOpenTypeFeaturesFromString
@@ -146,8 +147,8 @@ def build_kerning_states(glyphs, kerning):
     where A,B are the previous two glyphs. A state stores the current glyph
     and the vector of required advances to every possible next character.
     States with identical vectors are interchangeable, even if their actual
-    preceding glyphs differ. This merges 69*69*possible-gap histories into
-    a much smaller deterministic machine.
+    preceding glyphs differ. This merges the possible pair-and-gap histories
+    into a much smaller deterministic machine, including .notdef if present.
 
     Return (base states by codepoint, reachable states, transition table).
     Each transition returns (next state, required origin advance in pixels).
@@ -200,7 +201,12 @@ def build_font(glyphs, spacing=4):
     if any(image.width < 1 for image in glyphs.values()):
         raise ValueError("Glyph widths must be positive")
 
+    # Aseprite c=0 supplies the reserved OpenType .notdef outline. It is
+    # deliberately absent from cmap, but participates in GSUB/GPOS kerning so
+    # missing characters have the same advance as in the Python renderer.
     codes = sorted(glyphs)
+    if not any(code != 0 for code in codes):
+        raise ValueError("Cannot export a font with no mapped glyphs")
     kerning = AutoKerning(glyphs, spacing)
     verify_two_glyph_history(kerning)
     base, states, transitions = build_kerning_states(glyphs, kerning)
@@ -209,22 +215,30 @@ def build_font(glyphs, spacing=4):
     for state in states:
         code = state[0]
         if state == base[code]:
-            names[state] = glyph_name(code)
+            names[state] = ".notdef" if code == 0 else glyph_name(code)
         else:
             variant_counts[code] += 1
             names[state] = f"{glyph_name(code)}.s{variant_counts[code]:02d}"
 
-    order = [".notdef"] + [names[state] for state in states]
+    order = [".notdef"] + [names[state] for state in states
+                         if names[state] != ".notdef"]
     builder = FontBuilder(units_per_em, isTTF=True)
     builder.setupGlyphOrder(order)
-    builder.setupCharacterMap({code: names[base[code]] for code in codes})
-    blank = TTGlyphPen(None).glyph()
-    outlines = {".notdef": blank}
-    metrics = {".notdef": (16 * UNITS_PER_PIXEL, 0)}
+    builder.setupCharacterMap({code: names[base[code]] for code in codes if code != 0})
+    notdef = glyphs.get(0)
+    outlines = {".notdef": glyph_from_bitmap(notdef) if notdef is not None
+                else TTGlyphPen(None).glyph()}
+    metrics = {".notdef": (((notdef.width + spacing) if notdef is not None
+                            else 16) * UNITS_PER_PIXEL, 0)}
     for state in states:
         code = state[0]
         outlines[names[state]] = glyph_from_bitmap(glyphs[code])
-        metrics[names[state]] = ((glyphs[code].width + spacing) * UNITS_PER_PIXEL, 0)
+        # A k=0 glyph retains transparent left margins from its Aseprite
+        # cell. The TrueType side bearing must equal its ink's xMin: using
+        # zero here makes FreeType shift the artwork left by that margin.
+        bearing = (glyphs[code].getchannel("A").getbbox() or (0, 0, 0, 0))[0]
+        metrics[names[state]] = (kerning.nominal_advance(code) * UNITS_PER_PIXEL,
+                                 bearing * UNITS_PER_PIXEL)
     builder.setupGlyf(outlines)
     builder.setupHorizontalMetrics(metrics)
     ascent = height * UNITS_PER_PIXEL
@@ -263,7 +277,7 @@ def build_font(glyphs, spacing=4):
                 substitutions.append(
                     f"  sub {names[previous_state]} {names[base[right]]}' "
                     f"by {names[target]};")
-            adjustment = step - glyphs[previous_code].width - spacing
+            adjustment = step - kerning.nominal_advance(previous_code)
             if adjustment:
                 # GSUB runs before GPOS: match the state glyph actually
                 # produced by the transition, not the original Unicode glyph.
@@ -324,6 +338,11 @@ DEMO = '''<!doctype html>
 P.O.  L'.  #,,4
 UNICODE TRIANGLES: ◀ ▶ ▲ ▼
 MIXED TEXT: A▲B▶C▼D◀E
+BOX DRAWING:
+┌──────┬──────┐
+├──────┼──────┤
+└──────┴──────┘
+VERTICAL: │
 HELLO, WORLD!</p>
   <p style="color: #ffaf5f" class="red2">PIXEL OUTLINES</p>
 </body>
@@ -331,8 +350,24 @@ HELLO, WORLD!</p>
 '''
 
 
+def supported_characters_text(glyphs):
+    """List mapped Unicode characters, excluding the reserved .notdef (c=0)."""
+    codes = sorted(code for code in glyphs if code != 0)
+    lines = [
+        f"# RED2 supported characters ({len(codes)} Unicode code points)",
+        "# Code point\tCharacter\tUnicode name",
+    ]
+    for code in codes:
+        character = chr(code)
+        # repr() makes SPACE and punctuation unambiguous in this text file.
+        lines.append(
+            f"U+{code:04X}\t{character!r}\t{unicodedata.name(character, 'UNNAMED')}"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def export_web_font(glyphs, directory, spacing=4):
-    """Write the WOFF2, TTF, stylesheet, and sample page."""
+    """Write the fonts, CSS, demo, and supported-character manifest."""
     font, pairs = build_font(glyphs, spacing)
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
@@ -343,6 +378,8 @@ def export_web_font(glyphs, directory, spacing=4):
     font.save(woff2)
     (directory / "red2-font.css").write_text(CSS, encoding="utf-8")
     (directory / "demo.html").write_text(DEMO, encoding="utf-8")
+    (directory / "supported-characters.txt").write_text(
+        supported_characters_text(glyphs), encoding="utf-8")
     return ttf, woff2, pairs
 
 
@@ -366,6 +403,7 @@ def main():
     print(f"Saved {woff2} ({woff2.stat().st_size:,} bytes)")
     print(f"CSS: {args.output_dir / 'red2-font.css'}")
     print(f"Demo: {args.output_dir / 'demo.html'}")
+    print(f"Supported characters: {args.output_dir / 'supported-characters.txt'}")
 
 
 if __name__ == "__main__":

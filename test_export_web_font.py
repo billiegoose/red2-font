@@ -12,7 +12,7 @@ from fontTools.ttLib import TTFont
 
 from export_web_font import (
     UNITS_PER_PIXEL, build_font, build_kerning_states, export_web_font,
-    glyph_name, verify_two_glyph_history,
+    glyph_name, supported_characters_text, verify_two_glyph_history,
 )
 from render_font import AutoKerning, layout_line, load_glyphs
 
@@ -76,6 +76,21 @@ def shaped_origins(font, text):
 
 
 class WebFontUnitTests(unittest.TestCase):
+    def test_supported_character_manifest_is_sorted_and_excludes_notdef(self):
+        glyphs = {
+            0x25B2: sample_glyph(["#"]),
+            0: sample_glyph(["#"]),
+            65: sample_glyph(["#"]),
+            32: sample_glyph(["."]),
+        }
+        lines = supported_characters_text(glyphs).splitlines()
+        self.assertIn("(3 Unicode code points)", lines[0])
+        self.assertEqual([line.split("\t", 1)[0] for line in lines[2:]],
+                         ["U+0020", "U+0041", "U+25B2"])
+        self.assertIn("' '\tSPACE", lines[2])
+        self.assertIn("'▲'\tBLACK UP-POINTING TRIANGLE", lines[4])
+        self.assertNotIn("U+0000", "\n".join(lines))
+
     def test_non_bmp_glyph_names(self):
         self.assertEqual(glyph_name(65), "uni0041")
         self.assertEqual(glyph_name(0x1F600), "u01F600")
@@ -136,6 +151,22 @@ class RealFontExportTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.temp.cleanup()
 
+    def test_supported_character_file_matches_ttf_and_woff2_cmaps(self):
+        path = Path(self.temp.name) / "supported-characters.txt"
+        contents = path.read_text(encoding="utf-8")
+        lines = [line for line in contents.splitlines() if not line.startswith("#")]
+        codes = [int(line.split("\t", 1)[0][2:], 16) for line in lines]
+        self.assertEqual(codes, sorted(code for code in self.glyphs if code != 0))
+        self.assertEqual(len(codes), len(set(codes)))
+        self.assertIn("U+25B2\t'▲'", contents)
+        self.assertIn("U+2500\t'─'\tBOX DRAWINGS LIGHT HORIZONTAL", contents)
+        self.assertIn("U+253C\t'┼'\tBOX DRAWINGS LIGHT VERTICAL AND HORIZONTAL", contents)
+        self.assertEqual(len(codes), 84)
+        self.assertNotIn("U+0000", contents)
+        for file in (self.ttf, self.woff2):
+            with self.subTest(format=file.suffix):
+                self.assertEqual(codes, sorted(TTFont(file).getBestCmap()))
+
     def test_two_history_proof_rejects_insufficient_spacings(self):
         self.assertEqual(verify_two_glyph_history(self.kerning), len(self.glyphs) ** 4)
         for spacing in (0, 1, 2, 3):
@@ -158,12 +189,12 @@ class RealFontExportTests(unittest.TestCase):
 
     def test_contextual_state_machine_is_compact_and_encoded(self):
         base, states, transitions = build_kerning_states(self.glyphs, self.kerning)
-        self.assertEqual(len(base), 73)
-        self.assertEqual(len(states), 197)
+        self.assertEqual(len(base), 85)  # Includes c=0 reserved for .notdef.
+        self.assertEqual(len(states), 209)
         self.assertEqual(len(transitions), len(states) * len(base))
         self.assertEqual(sum(target != base[right]
                              for (state, right), (target, _) in transitions.items()), 222)
-        expected_rules = sum(step != self.glyphs[state[0]].width + 4
+        expected_rules = sum(step != self.kerning.nominal_advance(state[0])
                              for (state, right), (_, step) in transitions.items())
         self.assertEqual(self.rule_count, expected_rules)
         self.assertEqual(self.rule_count, 5164)
@@ -171,16 +202,43 @@ class RealFontExportTests(unittest.TestCase):
             with self.subTest(format=file.suffix):
                 font = TTFont(file)
                 self.assertEqual(font["head"].unitsPerEm, 2048)
-                self.assertEqual(len(font.getBestCmap()), len(self.glyphs))
+                self.assertEqual(len(font.getBestCmap()), len(self.glyphs) - 1)
+                self.assertNotIn(0, font.getBestCmap())
                 for character in "▲▶▼◀":
                     self.assertEqual(font.getBestCmap()[ord(character)], glyph_name(ord(character)))
-                self.assertEqual(font["maxp"].numGlyphs, 1 + len(states))
+                self.assertEqual(font["maxp"].numGlyphs, len(states))
                 self.assertEqual(len(kerning_pairs(font)), expected_rules)
                 self.assertIn("GSUB", font)
                 self.assertIn("GPOS", font)
                 self.assertEqual(font["hhea"].ascent, 2048)
                 self.assertEqual(font["hhea"].lineGap, 256)
                 self.assertEqual(font["hmtx"][glyph_name(ord("P"))][0], 18 * 64)
+                for code, advance in self.glyphs.fixed_advances.items():
+                    name = font.getBestCmap()[code]
+                    self.assertEqual(font["hmtx"][name][0], advance * UNITS_PER_PIXEL)
+                    bbox = self.glyphs[code].getchannel("A").getbbox()
+                    self.assertEqual(font["hmtx"][name][1], bbox[0] * UNITS_PER_PIXEL)
+
+    def test_notdef_is_glyph_zero_and_renders_from_aseprite(self):
+        self.assertIn(0, self.glyphs)
+        fallback = self.glyphs[0]
+        for file in (self.ttf, self.woff2):
+            with self.subTest(format=file.suffix):
+                font = TTFont(file)
+                self.assertEqual(font.getGlyphOrder()[0], ".notdef")
+                self.assertNotIn(0, font.getBestCmap())
+                self.assertGreater(font["glyf"][".notdef"].numberOfContours, 0)
+                self.assertEqual(font["hmtx"][".notdef"][0],
+                                 (fallback.width + self.kerning.spacing) * UNITS_PER_PIXEL)
+                rendered_font = ImageFont.truetype(str(file), 32)
+                for missing in ("☃", "é", "\u0378"):
+                    with self.subTest(missing=missing):
+                        output = Image.new("L", (fallback.width + 8, 32))
+                        ImageDraw.Draw(output).text(
+                            (0, 32), missing, font=rendered_font, anchor="ls", fill=255)
+                        expected = Image.new("L", output.size)
+                        expected.paste(fallback.getchannel("A"), (0, 0))
+                        self.assertEqual(output.tobytes(), expected.tobytes())
 
     def test_every_pair_matches_original_fpga_advance(self):
         codes = sorted(self.glyphs)
@@ -202,6 +260,10 @@ class RealFontExportTests(unittest.TestCase):
             "/_\\`", "/\\`", "AVATAR", "HELLO, WORLD!", "PO" * 100,
             "P...O" * 100, "#,,4" * 100,
             "▲▶▼◀", "A▲B▶C▼D◀E", "P.▲O▼.", "◀▶▲▼" * 100,
+            "☃", "A☃", "☃A", "A☃B", "☃☃", "AéA", "A☃éB",
+            "☃P.O.", "P.☃O", "▲☃▼", "☃A☃B☃" * 25,
+            "┌──────┬──────┐", "├──────┼──────┤", "└──────┴──────┘",
+            "─│┌┐└┘├┤┬┴┼", "A┌B", "│P.O.│", "┌──┬──┐" * 40,
         ]
         rng = random.Random(34875)
         codes = sorted(self.glyphs)
@@ -210,7 +272,9 @@ class RealFontExportTests(unittest.TestCase):
             for _ in range(2000)
         ]
         for text in samples:
-            expected = [x for _, x in layout_line(map(ord, text), self.kerning)]
+            expected_codes = [ord(char) if ord(char) in self.glyphs else 0
+                              for char in text]
+            expected = [x for _, x in layout_line(expected_codes, self.kerning)]
             for font in self.shapers:
                 self.assertEqual(shaped_origins(font, text), expected,
                                  f"HarfBuzz versus source renderer: {text!r}")

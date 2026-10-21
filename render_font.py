@@ -15,20 +15,50 @@ import tempfile
 from PIL import Image
 
 
-def parse_slice_codepoint(data):
-    """Parse Aseprite userdata as decimal c=65 or Unicode U+25B2/c=U+25B2.
+def parse_slice_userdata(data):
+    """Read a character mapping and optional k=0 from multiline slice userdata.
 
-    The U+ spelling uses hexadecimal; a bare decimal value is intentionally
-    not accepted, preserving the requirement for explicit decimal mappings.
+    The mapping can be decimal c=65, hexadecimal c=U+25B2, or bare U+25B2.
+    k=0 disables optical kerning and selects a fixed cell advance. Reject
+    unknown fields rather than silently misinterpreting Aseprite metadata.
     """
-    value = data.strip()
-    hex_match = re.fullmatch(r"(?:c\s*=\s*)?U\+([0-9a-f]{1,6})", value, re.IGNORECASE)
-    decimal_match = re.fullmatch(r"c\s*=\s*(\d+)", value)
-    if hex_match:
-        return int(hex_match[1], 16)
-    if decimal_match:
-        return int(decimal_match[1], 10)
-    raise ValueError("expected c=<decimal>, c=U+<hex>, or U+<hex> userdata")
+    code = None
+    fixed = False
+    seen_kerning = False
+    for value in data.splitlines():
+        value = value.strip()
+        if not value:
+            continue
+        kerning_match = re.fullmatch(r"k\s*=\s*([01])", value)
+        if kerning_match:
+            if seen_kerning:
+                raise ValueError("duplicate k= kerning field")
+            seen_kerning = True
+            fixed = kerning_match[1] == "0"
+            continue
+        hex_match = re.fullmatch(r"(?:c\s*=\s*)?U\+([0-9a-f]{1,6})", value, re.IGNORECASE)
+        decimal_match = re.fullmatch(r"c\s*=\s*(\d+)", value)
+        if not (hex_match or decimal_match):
+            raise ValueError("expected c=<decimal>, c=U+<hex>, U+<hex>, or k=0 userdata")
+        if code is not None:
+            raise ValueError("duplicate character mapping")
+        code = int(hex_match[1], 16) if hex_match else int(decimal_match[1], 10)
+    if code is None:
+        raise ValueError("missing character mapping (c=<decimal>, c=U+<hex>, or U+<hex>)")
+    return code, fixed
+
+
+def parse_slice_codepoint(data):
+    """Return a Unicode code point from Aseprite slice userdata."""
+    return parse_slice_userdata(data)[0]
+
+
+class GlyphCollection(dict):
+    """Codepoint-to-RGBA glyph dictionary carrying fixed-advance metadata."""
+
+    def __init__(self, *args, fixed_advances=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fixed_advances = dict(fixed_advances or {})
 
 
 def validate_slices(slices):
@@ -80,11 +110,11 @@ def load_glyphs(source, aseprite, layer="Glyphs"):
         metadata = json.loads(data.read_text())
         slices = metadata["meta"].get("slices", [])
         validate_slices(slices)
-        glyphs = {}
+        glyphs = GlyphCollection()
         with Image.open(sheet) as exported:
             pixels = exported.convert("RGBA")
         for item in slices:
-            code = parse_slice_codepoint(item["data"])
+            code, fixed = parse_slice_userdata(item["data"])
             keys = [key for key in item["keys"] if key["frame"] == 0]
             if not keys:
                 continue
@@ -101,10 +131,14 @@ def load_glyphs(source, aseprite, layer="Glyphs"):
                 raise ValueError(f"Invalid bounds for slice {item['name']!r}")
             glyph = pixels.crop((x, y, x + w, y + h))
             ink = glyph.getchannel("A").getbbox()
-            # Keep vertical metrics; blank glyphs (space) retain their slice width.
-            if ink:
+            # Fixed-cell glyphs retain their transparent side margins: unlike
+            # optically kerned letters, their stroke positions are relative
+            # to the original Aseprite slice, not the ink bounding box.
+            if ink and not fixed:
                 glyph = glyph.crop((ink[0], 0, ink[2], h))
             glyphs[code] = glyph
+            if fixed:
+                glyphs.fixed_advances[code] = w
         return glyphs
 
 
@@ -142,8 +176,13 @@ class AutoKerning:
     def __init__(self, glyphs, spacing=4):
         self.glyphs = glyphs
         self.spacing = spacing
+        self.fixed_advances = dict(getattr(glyphs, "fixed_advances", {}))
         self.rows = {code: contours(glyph) for code, glyph in glyphs.items()}
         self.cache = {}
+
+    def nominal_advance(self, left):
+        """A fixed-cell glyph has no intercharacter gap, even before text."""
+        return self.fixed_advances.get(left, self.glyphs[left].width + self.spacing)
 
     def advance(self, left, right):
         pair = (left, right)
@@ -152,6 +191,8 @@ class AutoKerning:
         return self.cache[pair]
 
     def _advance(self, left, right):
+        if left in self.fixed_advances or right in self.fixed_advances:
+            return self.nominal_advance(left)
         a, b = self.rows[left], self.rows[right]
         nominal = self.glyphs[left].width + self.spacing
         if not a or not b:
@@ -218,17 +259,32 @@ def layout_line(codes, kerning):
         # Future origins cannot move left, so these entries can be forgotten.
         while recent and recent[0][2] <= x:
             recent.popleft()
-        recent.append((code, x, x + kerning.glyphs[code].width + kerning.spacing))
+        recent.append((code, x, x + kerning.nominal_advance(code)))
     return positions
 
 
 def compose(text, glyphs, kerning):
-    """Render multiple lines; unsupported characters have no advance."""
+    """Render text, substituting the reserved glyph 0 for missing characters.
+
+    If no .notdef glyph was provided, preserve the old skip-with-warning
+    behavior. Line breaks remain layout controls, not printable glyphs.
+    """
+    fallback = 0 if 0 in glyphs else None
     missing = sorted(set(text) - {chr(code) for code in glyphs} - {"\n"})
     for character in missing:
-        print(f"Warning: skipping unrecognized character {character!r} "
+        action = "replacing" if fallback is not None else "skipping"
+        print(f"Warning: {action} unrecognized character {character!r} "
               f"(U+{ord(character):04X}).", file=sys.stderr)
-    lines = [[ord(c) for c in line if ord(c) in glyphs] for line in text.split("\n")]
+    lines = []
+    for line in text.split("\n"):
+        codes = []
+        for character in line:
+            code = ord(character)
+            if code in glyphs:
+                codes.append(code)
+            elif fallback is not None:
+                codes.append(fallback)
+        lines.append(codes)
     if not any(lines):
         return Image.new("RGBA", (1, 1), (0, 0, 0, 255))
     height = max(glyph.height for glyph in glyphs.values())
@@ -262,7 +318,7 @@ def export_kerning_csv(path, alphabet, glyphs, kerning):
         for left in alphabet:
             for right in alphabet:
                 advance = kerning.advance(ord(left), ord(right))
-                adjustment = advance - glyphs[ord(left)].width - kerning.spacing
+                adjustment = advance - kerning.nominal_advance(ord(left))
                 if adjustment == 0:
                     continue
                 # Measure all pixel pairs, including rows beyond the search radius.
@@ -304,13 +360,19 @@ def compose_pairs(glyphs, kerning):
 
 def render(text, source, output, aseprite, spacing=4, layer="Glyphs", pairs=False):
     glyphs = load_glyphs(source, aseprite, layer)
-    kerning = AutoKerning(glyphs, spacing)
-    image = compose_pairs(glyphs, kerning) if pairs else compose(text, glyphs, kerning)
+    # c=0 is the reserved missing-glyph artwork, not a mapped text character.
+    # Keep it available for normal rendering but omit it from pair samples/CSV.
+    sample_glyphs = (GlyphCollection(
+        {code: image for code, image in glyphs.items() if code != 0},
+        fixed_advances=getattr(glyphs, "fixed_advances", {}),
+    ) if pairs else glyphs)
+    kerning = AutoKerning(sample_glyphs, spacing)
+    image = compose_pairs(sample_glyphs, kerning) if pairs else compose(text, glyphs, kerning)
     image.save(output, format="PNG")
     if pairs:
-        alphabet = [chr(code) for code in sorted(glyphs)]
+        alphabet = [chr(code) for code in sorted(sample_glyphs)]
         csv_path = Path(output).with_name("kerning_pairs.csv")
-        count = export_kerning_csv(csv_path, alphabet, glyphs, kerning)
+        count = export_kerning_csv(csv_path, alphabet, sample_glyphs, kerning)
         print(f"Saved {csv_path} ({count} nonzero kerning pairs)")
     return image.size
 
@@ -321,7 +383,7 @@ def main():
         "text",
         nargs="?",
         default="",
-        help="Text to render; characters without glyphs are skipped with a warning",
+        help="Text to render; unsupported characters use .notdef (or are skipped if absent)",
     )
     parser.add_argument(
         "--source", type=Path, default=Path(__file__).with_name("RED2 Font.aseprite")

@@ -11,7 +11,7 @@ from PIL import Image
 
 from render_font import (
     AutoKerning, compose, horizontal_ink_metrics, layout_line, load_glyphs,
-    parse_slice_codepoint, render, validate_slices,
+    GlyphCollection, parse_slice_codepoint, parse_slice_userdata, render, validate_slices,
 )
 
 
@@ -51,6 +51,18 @@ class UnicodeSliceTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertEqual(parse_slice_codepoint(value), code)
 
+    def test_multiline_kerning_userdata(self):
+        self.assertEqual(parse_slice_userdata('c=U+2500\nk=0'), (0x2500, True))
+        self.assertEqual(parse_slice_userdata('k=0\n U+253C '), (0x253C, True))
+        self.assertEqual(parse_slice_userdata('c=65\nk=1'), (65, False))
+        self.assertEqual(parse_slice_userdata('c=65'), (65, False))
+        self.assertEqual(parse_slice_codepoint('c=U+251C\nk=0'), 0x251C)
+        for value in ('c=65\nk=2', 'c=65\nk=off', 'c=65\nk=0\nk=1',
+                      'c=65\nc=66', 'k=0', 'c=65\nunknown=1'):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    parse_slice_userdata(value)
+
     def test_rejects_malformed_out_of_range_surrogates_and_duplicates(self):
         for value in ("", "65", "c=", "c=0x25B2", "U+NOTHEX", "c=U+25B2garbage"):
             with self.subTest(value=value):
@@ -75,7 +87,13 @@ class UnicodeSliceTests(unittest.TestCase):
         glyphs = load_glyphs(Path(__file__).resolve().parent / "RED2 Font.aseprite", "aseprite")
         triangles = "▲▶▼◀"
         self.assertTrue(all(ord(character) in glyphs for character in triangles))
-        self.assertEqual(len(glyphs), 73)
+        self.assertEqual(len(glyphs), 85)  # 84 mapped characters plus .notdef (c=0).
+        box_codes = {ord(char) for char in '─│┌┐└┘├┤┬┴┼'}
+        self.assertEqual(set(glyphs.fixed_advances), box_codes)
+        self.assertEqual({glyphs.fixed_advances[code] for code in box_codes}, {17})
+        self.assertEqual({glyphs[code].width for code in box_codes}, {17})
+        self.assertIn(0, glyphs)
+        self.assertIsNotNone(glyphs[0].getchannel("A").getbbox())
         warnings = io.StringIO()
         with contextlib.redirect_stderr(warnings):
             image = compose("A▲▶▼◀Z", glyphs, AutoKerning(glyphs))
@@ -86,6 +104,25 @@ class UnicodeSliceTests(unittest.TestCase):
 
 
 class KerningTests(unittest.TestCase):
+    def test_k0_fixed_cell_bypasses_optical_kerning_in_both_directions(self):
+        # Keep cell margins as supplied by Aseprite; do not ink-trim them.
+        glyphs = GlyphCollection({
+            65: glyph(['####'] * 2),
+            0x2500: glyph(['#####'] * 2),
+            0x2502: glyph(['..#..'] * 2),
+        }, fixed_advances={0x2500: 5, 0x2502: 5})
+        kern = AutoKerning(glyphs)
+        self.assertEqual(kern.advance(0x2500, 0x2502), 5)
+        self.assertEqual(kern.advance(0x2502, 0x2500), 5)
+        self.assertEqual(kern.advance(65, 0x2500), 8)
+        self.assertEqual(kern.advance(0x2500, 65), 5)
+        self.assertEqual(kern.advance(65, 0x2502), 8)
+        self.assertEqual(kern.advance(0x2502, 65), 5)
+        self.assertEqual([x for _, x in layout_line([0x2500, 0x2502, 0x2500], kern)],
+                         [0, 5, 10])
+        self.assertEqual([x for _, x in layout_line([65, 0x2500, 0x2502, 65], kern)],
+                         [0, 8, 13, 18])
+
     def test_default_spacing_is_four(self):
         glyphs = {65: glyph(["##"] * 3)}
         self.assertEqual(AutoKerning(glyphs).spacing, 4)
@@ -211,6 +248,23 @@ class KerningTests(unittest.TestCase):
         self.assertEqual(layout_line([], kern), [])
         self.assertEqual(compose('A A\nA', glyphs, kern).size, (14, 6))
 
+    def test_notdef_replaces_missing_characters_with_normal_kerning(self):
+        glyphs = {65: glyph(["##", "##"]), 0: glyph([".#", "##"])}
+        kern = AutoKerning(glyphs)
+        warnings = io.StringIO()
+        with contextlib.redirect_stderr(warnings):
+            image = compose("A?A\n☃", glyphs, kern)
+        self.assertEqual(image.size, (14, 8))
+        # The unknown '?' is placed at x=6, between the two A glyphs.
+        self.assertEqual(image.getpixel((7, 0)), (255, 255, 255, 255))
+        self.assertEqual(image.getpixel((6, 0)), (0, 0, 0, 255))
+        self.assertEqual(image.getpixel((0, 6)), (0, 0, 0, 255))
+        self.assertEqual(image.getpixel((1, 6)), (255, 255, 255, 255))
+        self.assertEqual(compose("?", glyphs, kern).size, (2, 2))
+        self.assertIn("replacing unrecognized character '?'", warnings.getvalue())
+        self.assertIn("replacing unrecognized character '☃'", warnings.getvalue())
+        self.assertNotIn("'\\n'", warnings.getvalue())
+
     def test_skip_warning_and_line_break(self):
         glyphs = {65: glyph(["##", "##"])}
         warnings = io.StringIO()
@@ -219,6 +273,20 @@ class KerningTests(unittest.TestCase):
         self.assertEqual(image.size, (7, 8))
         self.assertIn("'?'", warnings.getvalue())
         self.assertNotIn("'\\n'", warnings.getvalue())
+
+    def test_notdef_is_excluded_from_unicode_pair_preview_and_csv(self):
+        glyphs = {0: glyph(["###"]), 65: glyph(["##"]), 66: glyph(["#."])}
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "pairs.png"
+            with patch("render_font.load_glyphs", return_value=glyphs):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    render("", Path("font.aseprite"), output, "aseprite", pairs=True)
+            with output.with_name("kerning_pairs.csv").open() as file:
+                csv_content = file.read()
+            self.assertNotIn("\\x00", csv_content)
+            self.assertNotIn(".notdef", csv_content)
+            with Image.open(output) as image:
+                self.assertEqual(image.height, 1 * (1 + 4) + 1)
 
     def test_pairs_include_all_glyphs_without_space_slice(self):
         glyphs = {65: glyph(["##"]), 48: glyph(["##"]), 33: glyph(["#."])}

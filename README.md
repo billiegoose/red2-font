@@ -16,7 +16,12 @@ python export_web_font.py
 ```
 
 This generates `dist/RED2-Regular.woff2`, `dist/RED2-Regular.ttf`,
-`dist/red2-font.css`, and `dist/demo.html`. The generated `dist/` directory is
+`dist/red2-font.css`, `dist/demo.html`, and `dist/supported-characters.txt`.
+The UTF-8 character list has one entry per mapped glyph, sorted by Unicode
+code point, with the character (quoted to make spaces visible), its `U+` code
+point, and its Unicode name. It excludes the reserved `.notdef` (`c=0`) glyph.
+The list is regenerated alongside the fonts, so it stays in sync with their
+supported character set. The generated `dist/` directory is
 ignored by Git; rerun the exporter after editing the Aseprite artwork. The
 exporter also accepts `--source`, `--aseprite`, `--layer`, `--spacing`, and
 `--output-dir` overrides, mirroring the normal renderer.
@@ -66,21 +71,29 @@ control font rasterization and will not fix blurry text. For guaranteed hard
 bitmap pixels, render the original bitmap glyphs as images instead.
 
 Text color, backgrounds, and layout remain regular CSS properties. The source
-contains 73 glyphs, including four Unicode triangle characters:
-`▲` (U+25B2), `▶` (U+25B6), `▼` (U+25BC), and `◀` (U+25C0).
-Unsupported characters use the browser's fallback font. A generated
-`demo.html` shows the font in use.
+contains 84 Unicode-mapped glyphs, including four triangle characters:
+`▲` (U+25B2), `▶` (U+25B6), `▼` (U+25BC), and `◀` (U+25C0), plus
+11 box-drawing characters (`─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼`).
+The Aseprite source also has a reserved **`.notdef`** glyph (`c=0`), making
+85 source slices but still 84 Unicode-mapped text characters. Both exported
+fonts use the actual pixel outline as OpenType glyph ID 0, rather than an empty
+placeholder. This glyph is intentionally **not** mapped to U+0000; HarfBuzz
+can render it for unknown characters, including with the normal contextual
+kerning. Browsers may instead choose another installed font for unsupported
+Unicode characters (CSS font fallback), so a browser cannot be relied on to
+show this `.notdef` artwork whenever a character is missing. A generated
+`demo.html` shows the web font in use.
 
 **Contextual kerning:** Each successive character is placed at the maximum
 position required by the preceding two glyphs, exactly as the FPGA renderer
 does. The exporter compiles this two-glyph history into a finite-state machine
-with 197 states: 73 original glyphs and 124 invisible glyph alternates. OpenType
+with 209 states: 85 source glyphs (including `.notdef`) and 124 invisible glyph alternates. OpenType
 `calt` (contextual substitution) carries that state along the text, and `kern`
 (GPOS pair positioning) applies its advance. Both features must be enabled;
 the generated CSS enables them explicitly. For example, browser shaping places
 `P.O.` at `[0, 11, 18, 39]`, matching the Python renderer rather than the
-`[0, 11, 16, 37]` from ordinary adjacent-pair kerning. There are 5,164 nonzero state-dependent GPOS pair rules, and the resulting
-WOFF2 is roughly 6.9 KB.
+`[0, 11, 16, 37]` from ordinary adjacent-pair kerning. There are 5,164 nonzero state-dependent GPOS pair rules. The generated
+font sizes are reported by the exporter.
 
 This exactness depends on a property of the pair-advance table: an exhaustive
 four-character check must prove that older glyphs cannot impose a stronger
@@ -133,10 +146,12 @@ python render_font.py "0123456789ABCD"
 
 This runs `aseprite` from PATH, exports the first frame and slice metadata to
 temporary files, maps slice userdata such as `c=65`, `c=U+25B2`, or `U+25B2`
-to Unicode code points,
-and writes a black-background `output.png` in the current directory. It exports only
-the `Glyphs` layer, excluding the Background guide lines. Transparent margins are
-cropped horizontally; vertical slice metrics and blank space widths are preserved.
+to Unicode code points, and writes a black-background `output.png` in the
+current directory. It exports only the `Glyphs` layer, excluding the Background
+guide lines. Ordinary glyphs are cropped horizontally; vertical slice metrics
+and blank space widths are preserved. Glyphs marked `k=0` are **not** cropped:
+their transparent left/right margins define the artwork's alignment inside a
+fixed-width cell.
 Use `--aseprite /path/to/aseprite`, `--source font.aseprite`, or
 `--output preview.png` to override the defaults.
 
@@ -144,8 +159,22 @@ Every slice must have explicit code-point userdata: `c=<decimal>` for the
 existing ASCII characters, or `c=U+<hex>` / `U+<hex>` for Unicode. For example,
 `c=65` and `c=U+0041` both mean `A`; `U+25B2` means `▲`. The parser checks
 Unicode scalar validity and rejects duplicate code points even when written
-in different notations. Rendering reports all validation errors before
-composing the output.
+in different notations. To disable automatic optical kerning for a glyph, put
+`k=0` on a separate line of the slice's userdata, for example:
+
+```text
+c=U+2500
+k=0
+```
+
+All eleven box-drawing glyphs currently use `k=0`. Each retains its full
+17-pixel slice width, including transparent margins, and advances by exactly
+17 pixels without a spacing gap. Pairs containing a `k=0` glyph do not optically
+tighten, in either direction; the preceding glyph advances by its own nominal
+width (plus normal spacing unless that glyph is also `k=0`). A missing `k`
+field (or `k=1`) uses normal automatic kerning. The exported TrueType/WOFF2
+fonts preserve the same advances and the original in-cell left margins.
+Rendering reports all validation errors before composing the output.
 
 To render the four Unicode triangles directly:
 
@@ -153,12 +182,16 @@ To render the four Unicode triangles directly:
 python render_font.py "◀ ▶ ▲ ▼" --output triangles.png
 ```
 
-Characters without a matching slice are skipped without adding spacing, with a
-warning printed to the terminal for each distinct unrecognized character. Empty
-text or text with no recognized characters produces a black 1×1 PNG.
+Unsupported characters are rendered with the Aseprite `.notdef` glyph
+(`c=0`), respecting the same spacing and earlier-glyph kerning constraints as
+ordinary glyphs. The renderer warns once per distinct unknown character.
+Newlines remain line breaks, not `.notdef` substitutions. With a source that
+has no `c=0` glyph, the previous behavior is preserved: unsupported characters
+are skipped without advancing. Empty text, or text containing no renderable
+glyphs, produces a black 1×1 PNG.
 
-Automatic kerning starts with the cropped glyph boxes `spacing` pixels apart
-(default 4). It compares the facing edge pixels in each row against rows up to
+For glyph pairs without a `k=0` character, automatic kerning starts with the
+cropped glyph boxes `spacing` pixels apart (default 4). It compares the facing edge pixels in each row against rows up to
 `spacing` pixels above and below in the other glyph. The second glyph moves left
 one pixel at a time until the closest Euclidean gap falls below the target,
 then chooses that placement or the previous one, whichever is closer to the target.
@@ -190,8 +223,9 @@ only two-input pair lookups, without a three-input table or character-specific
 exceptions.
 
 The layout state is a queue of recent glyphs. An entry is discarded once
-`earlier_x + earlier.width + spacing <= x`: no pair advance exceeds that nominal
-bound, and future left edges cannot move backward. Both box edges stay in
+`earlier_x + nominal_advance(earlier) <= x`: no pair advance exceeds that
+bound, and future left edges cannot move backward. The nominal advance is
+`width + spacing` for ordinary glyphs or the original slice width for `k=0`. Both box edges stay in
 reading order, so entries expire from the front of the queue. Only glyphs still
 within reach require pair lookups; there is no map of character occurrences or
 fixed two-glyph cutoff. For example, at spacing 3, `/,<T` still needs the `/`
@@ -211,8 +245,10 @@ python render_font.py "AVATAR" --spacing 2
 python -m unittest test_render_font.py
 ```
 
-`--pairs` renders every ordered pair of available glyphs, including digits,
-punctuation, and spaces, ordered by code point. For N glyphs, it produces N² pairs
+`--pairs` renders every ordered pair of mapped text glyphs, including digits,
+punctuation, and spaces, ordered by code point. The reserved `.notdef` glyph
+(`c=0`) is excluded from these samples and the accompanying CSV.
+For N mapped glyphs, it produces N² pairs
 in N rows. Pair samples have a separate visual gap and do not require a space
 slice. Text input also supports
 newlines. `--spacing` controls the target gap and vertical search radius and `--layer` selects the artwork
@@ -223,8 +259,9 @@ may be one pixel apart: glyphs can touch, but their pixels do not overlap.
 
 `--pairs` also writes `kerning_pairs.csv` beside the PNG, omitting pairs whose
 kerning adjustment is zero. The PNG still shows every pair. Columns contain the
-left/right characters, requested spacing, advance, adjustment relative to cropped
-width plus spacing, and the actual minimum pixel-center distance minus 1.
+left/right characters, requested spacing, advance, adjustment relative to the
+left glyph's nominal advance (slice width for `k=0`, otherwise cropped width
+plus spacing), and the actual minimum pixel-center distance minus 1.
 Distances are measured across all occupied pixels and rounded to six decimals.
 
 CSV distances are blank for pairs containing an empty glyph such as space.
@@ -264,14 +301,16 @@ for code, image in sorted(glyphs.items()):
 
 left, right = ord("A"), ord("V")
 advance = kerning.advance(left, right)
-adjustment = advance - glyphs[left].width - kerning.spacing
+adjustment = advance - kerning.nominal_advance(left)
 print("A to V:", advance, "pixels; adjustment:", adjustment)
 ```
 
-`load_glyphs` returns a dictionary mapping integer Unicode code points to
-independent Pillow RGBA images. The PNGs preserve transparent pixels. A glyph
+`load_glyphs` returns a dictionary-like `GlyphCollection` mapping integer
+Unicode code points to independent Pillow RGBA images. Its
+`fixed_advances` mapping records the slice width of every `k=0` glyph. The PNGs preserve transparent pixels. A glyph
 exists when its code point is in the dictionary; `glyphs.get(code)` returns
-`None` for an unsupported character. The loader does not limit the font to ASCII.
+`None` for an unsupported character. The loader does not limit the font to ASCII. The reserved entry `glyphs[0]`
+is `.notdef` artwork for unknown characters, not a Unicode cmap entry.
 Slice userdata is the character mapping: `c=65` means `A`, while
 `c=U+25C0` means `◀` and bare `U+25B2` means `▲`. Decimal and Unicode hex
 notation both work. Slice names are not used to identify characters. Missing or duplicate mappings,
