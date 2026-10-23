@@ -1,13 +1,13 @@
 # Two-color glyph → four-color anti-aliasing
 
-The example implementation is [antialias_font.py](./antialias_font.py).
+The example implementation is [src/antialias.py](./src/antialias.py).
 It refines the binary glyph with three Scale2x passes, samples it back to its
 original size with Pillow BOX, then selects the nearest perceptual shade from
 **0, 59, 198, 255**. No dithering.
 
 ```python
 from PIL import Image
-from antialias_font import antialias_glyph
+from src.antialias import antialias_glyph
 
 # Two-color input: black background (0), white ink (255).
 with Image.open("glyph.png") as image:
@@ -23,7 +23,7 @@ those four gray values. This reproduces the selected fitted preview.
 For a transparent glyph returned by `load_glyphs()`, use its alpha occupancy:
 
 ```python
-from antialias_font import compile_glyph
+from src.antialias import compile_glyph
 
 antialiased = compile_glyph(glyph_rgba)
 ```

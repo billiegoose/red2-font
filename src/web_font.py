@@ -6,17 +6,17 @@ units per source pixel. Each occupied pixel contributes to the exterior
 outline, so the glyphs stay blocky and can be colored with CSS currentColor.
 """
 
-import argparse
 from collections import defaultdict
 from pathlib import Path
-import subprocess
 import unicodedata
 
 from fontTools.fontBuilder import FontBuilder
 from fontTools.feaLib.builder import addOpenTypeFeaturesFromString
 from fontTools.pens.ttGlyphPen import TTGlyphPen
+from fontTools.misc.timeTools import timestampNow
 
-from render_font import AutoKerning, load_glyphs
+from .font import AutoKerning
+from .kerning import verify_two_glyph_history
 
 
 UNITS_PER_PIXEL = 64
@@ -108,38 +108,6 @@ def glyph_from_bitmap(image):
     return pen.glyph()
 
 
-def verify_two_glyph_history(kerning):
-    """Verify the FPGA's two-history recurrence reproduces full layout.
-
-    For any four characters A B C D, the earliest A must never constrain D
-    more strongly than the last two glyphs B and C already do. This local
-    property proves the recurrence works for arbitrarily long strings.
-    Return the number of ordered quadruples checked, or raise ValueError with
-    an actual counterexample. It is deliberately checked for every export:
-    different artwork and spacing values can invalidate the property.
-    """
-    codes = sorted(kerning.glyphs)
-    advances = {left: {right: kerning.advance(left, right) for right in codes}
-                for left in codes}
-    for a in codes:
-        row_a = advances[a]
-        for b in codes:
-            row_b = advances[b]
-            xb = row_a[b]
-            for c in codes:
-                row_c = advances[c]
-                xc = max(row_a[c], xb + row_b[c])
-                for d in codes:
-                    if row_a[d] > max(xb + row_b[d], xc + row_c[d]):
-                        example = ''.join(chr(code) for code in (a, b, c, d))
-                        raise ValueError(
-                            f"Two-glyph history is insufficient for {example!r} "
-                            f"at spacing {kerning.spacing}; exact FPGA/Python "
-                            "layout equivalence cannot be guaranteed."
-                        )
-    return len(codes) ** 4
-
-
 def build_kerning_states(glyphs, kerning):
     """Compile the FPGA's two-glyph lookbehind into a finite-state machine.
 
@@ -181,7 +149,7 @@ def build_kerning_states(glyphs, kerning):
     return base, states, transitions
 
 
-def build_font(glyphs, spacing=4):
+def build_font(glyphs, spacing=4, *, kerning=None):
     """Return a TrueType font implementing FPGA two-history placement.
 
     GSUB contextual alternates encode the lookbehind state invisibly in glyph
@@ -207,7 +175,10 @@ def build_font(glyphs, spacing=4):
     codes = sorted(glyphs)
     if not any(code != 0 for code in codes):
         raise ValueError("Cannot export a font with no mapped glyphs")
-    kerning = AutoKerning(glyphs, spacing)
+    if kerning is None:
+        kerning = AutoKerning(glyphs, spacing)
+    elif kerning.spacing != spacing or set(kerning.glyphs) != set(glyphs):
+        raise ValueError("Prepared kerning does not match glyphs and spacing")
     verify_two_glyph_history(kerning)
     base, states, transitions = build_kerning_states(glyphs, kerning)
     names = {}
@@ -263,7 +234,8 @@ def build_font(glyphs, spacing=4):
     )
     builder.setupPost()
     builder.setupMaxp()
-    builder.setupHead(unitsPerEm=units_per_em, fontRevision=1.0)
+    timestamp = timestampNow()
+    builder.setupHead(unitsPerEm=units_per_em, fontRevision=1.0, created=timestamp, modified=timestamp)
 
     substitutions = []
     positions = []
@@ -366,45 +338,33 @@ def supported_characters_text(glyphs):
     return "\n".join(lines) + "\n"
 
 
+def write_web_fonts(font, glyphs, directory, formats):
+    """Save a single compiled font in only the selected web formats."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    files = []
+    for format_name in formats:
+        if format_name not in {"ttf", "woff", "woff2"}:
+            raise ValueError(f"Unknown web-font format {format_name!r}")
+        path = directory / f"RED2-Regular.{format_name}"
+        font.flavor = None if format_name == "ttf" else format_name
+        font.save(path)
+        files.append(path)
+    sources = ",\n       ".join(
+        f'url("./RED2-Regular.{name}") format("{"truetype" if name == "ttf" else name}")'
+        for name in formats)
+    css = CSS.replace('url("./RED2-Regular.woff2") format("woff2"),\n       '
+                      'url("./RED2-Regular.ttf") format("truetype")', sources)
+    for name, content in (("red2-font.css", css), ("demo.html", DEMO),
+                          ("supported-characters.txt", supported_characters_text(glyphs))):
+        path = directory / name
+        path.write_text(content, encoding="utf-8")
+        files.append(path)
+    return files
+
+
 def export_web_font(glyphs, directory, spacing=4):
     """Write the fonts, CSS, demo, and supported-character manifest."""
     font, pairs = build_font(glyphs, spacing)
-    directory = Path(directory)
-    directory.mkdir(parents=True, exist_ok=True)
-    ttf = directory / "RED2-Regular.ttf"
-    woff2 = directory / "RED2-Regular.woff2"
-    font.save(ttf)
-    font.flavor = "woff2"
-    font.save(woff2)
-    (directory / "red2-font.css").write_text(CSS, encoding="utf-8")
-    (directory / "demo.html").write_text(DEMO, encoding="utf-8")
-    (directory / "supported-characters.txt").write_text(
-        supported_characters_text(glyphs), encoding="utf-8")
-    return ttf, woff2, pairs
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", type=Path, default=Path(__file__).with_name("RED2 Font.aseprite"))
-    parser.add_argument("--aseprite", default="aseprite")
-    parser.add_argument("--layer", default="Glyphs")
-    parser.add_argument("--spacing", type=int, default=4)
-    parser.add_argument("--output-dir", type=Path, default=Path("dist"))
-    args = parser.parse_args()
-    if args.spacing < 0:
-        parser.error("--spacing must be nonnegative")
-    try:
-        glyphs = load_glyphs(args.source, args.aseprite, args.layer)
-        ttf, woff2, pairs = export_web_font(glyphs, args.output_dir, args.spacing)
-    except (ValueError, OSError, subprocess.CalledProcessError) as error:
-        parser.exit(1, f"Error: {error}\n")
-    print(f"Exported {len(glyphs)} source glyphs and {pairs} state-dependent kerning rules")
-    print(f"Saved {ttf} ({ttf.stat().st_size:,} bytes)")
-    print(f"Saved {woff2} ({woff2.stat().st_size:,} bytes)")
-    print(f"CSS: {args.output_dir / 'red2-font.css'}")
-    print(f"Demo: {args.output_dir / 'demo.html'}")
-    print(f"Supported characters: {args.output_dir / 'supported-characters.txt'}")
-
-
-if __name__ == "__main__":
-    main()
+    files = write_web_fonts(font, glyphs, directory, ("ttf", "woff2"))
+    return files[0], files[1], pairs

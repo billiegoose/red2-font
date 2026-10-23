@@ -8,21 +8,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from PIL import Image
+from src.specimen import EXAMPLE_TEXT
 
-from render_font import (
+from src.font import (
     AutoKerning, compose, horizontal_ink_metrics, layout_line, load_glyphs,
     GlyphCollection, parse_slice_codepoint, parse_slice_userdata, render, validate_slices,
 )
 
 
-EXAMPLE_TEXT = """THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG.
-PACK MY BOX WITH FIVE DOZEN LIQUOR JUGS!
-LOOK! A QUIET KOALA WALKS ALONG THE QUAY.
-AVATAR / WAVY / TYPOGRAPHY / MINIMUM / 0123456789
-RED2 FONT: VERSION 1.0 | STATUS: READY
-PRICE: $12.50 + 8% TAX = $13.50
-(ROUND) [SQUARE] {CURLY} <ANGLE> @HOME #42
-"HELLO, WORLD!" & 'GOODBYE'; A_B ~ C^D * E?"""
 
 
 def glyph(rows):
@@ -84,14 +77,18 @@ class UnicodeSliceTests(unittest.TestCase):
             ])
 
     def test_load_and_render_all_four_real_unicode_triangles(self):
-        glyphs = load_glyphs(Path(__file__).resolve().parent / "RED2 Font.aseprite", "aseprite")
+        glyphs = load_glyphs(Path(__file__).resolve().parents[1] / "RED2 Font.aseprite", "aseprite")
         triangles = "▲▶▼◀"
         self.assertTrue(all(ord(character) in glyphs for character in triangles))
         self.assertEqual(len(glyphs), 85)  # 84 mapped characters plus .notdef (c=0).
-        box_codes = {ord(char) for char in '─│┌┐└┘├┤┬┴┼'}
-        self.assertEqual(set(glyphs.fixed_advances), box_codes)
-        self.assertEqual({glyphs.fixed_advances[code] for code in box_codes}, {17})
-        self.assertEqual({glyphs[code].width for code in box_codes}, {17})
+        fixed_codes = {ord(char) for char in '─│┌┐└┘├┤┬┴┼▲▶▼◀'}
+        self.assertEqual(set(glyphs.fixed_advances), fixed_codes)
+        self.assertEqual({glyphs.fixed_advances[code] for code in fixed_codes}, {17})
+        self.assertEqual({glyphs[code].width for code in fixed_codes}, {17})
+        kerning = AutoKerning(glyphs)
+        for left in fixed_codes:
+            for right in fixed_codes:
+                self.assertEqual(kerning.advance(left, right), 17)
         self.assertIn(0, glyphs)
         self.assertIsNotNone(glyphs[0].getchannel("A").getbbox())
         warnings = io.StringIO()
@@ -278,9 +275,9 @@ class KerningTests(unittest.TestCase):
         glyphs = {0: glyph(["###"]), 65: glyph(["##"]), 66: glyph(["#."])}
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "pairs.png"
-            with patch("render_font.load_glyphs", return_value=glyphs):
+            with patch("src.font.load_glyphs", return_value=glyphs):
                 with contextlib.redirect_stdout(io.StringIO()):
-                    render("", Path("font.aseprite"), output, "aseprite", pairs=True)
+                    render("", Path("font.aseprite"), output, "aseprite", pairs=True, kerning_slack=0)
             with output.with_name("kerning_pairs.csv").open() as file:
                 csv_content = file.read()
             self.assertNotIn("\\x00", csv_content)
@@ -292,9 +289,9 @@ class KerningTests(unittest.TestCase):
         glyphs = {65: glyph(["##"]), 48: glyph(["##"]), 33: glyph(["#."])}
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "pairs.png"
-            with patch("render_font.load_glyphs", return_value=glyphs) as load:
+            with patch("src.font.load_glyphs", return_value=glyphs) as load:
                 with contextlib.redirect_stdout(io.StringIO()):
-                    render("", Path("font.aseprite"), output, "aseprite", pairs=True)
+                    render("", Path("font.aseprite"), output, "aseprite", pairs=True, kerning_slack=0)
                 self.assertEqual(load.call_args.args[2], "Glyphs")
             with output.with_name("kerning_pairs.csv").open() as file:
                 rows = list(csv.DictReader(file))
@@ -313,7 +310,7 @@ class KerningTests(unittest.TestCase):
 
 class ExampleRenderTest(unittest.TestCase):
     def test_recent_queue_preserves_constraints_beyond_two_glyphs(self):
-        directory = Path(__file__).resolve().parent
+        directory = Path(__file__).resolve().parents[1]
         glyphs = load_glyphs(directory / 'RED2 Font.aseprite', 'aseprite')
         examples = ((0, '"//_', [0, 0, 3, 7]),
                     (1, '#``@', [0, 7, 12, 13]),
@@ -325,7 +322,7 @@ class ExampleRenderTest(unittest.TestCase):
                 self.assertEqual([x for _, x in placements], expected)
 
     def test_recent_queue_matches_all_prior_glyphs_across_spacings(self):
-        directory = Path(__file__).resolve().parent
+        directory = Path(__file__).resolve().parents[1]
         glyphs = load_glyphs(directory / 'RED2 Font.aseprite', 'aseprite')
         rng = random.Random(0)
         samples = [list(map(ord, text)) for text in
@@ -344,7 +341,7 @@ class ExampleRenderTest(unittest.TestCase):
                     self.assertEqual(layout_line(iter(codes), kern), expected)
 
     def test_real_font_matches_approved_punctuation_placements(self):
-        directory = Path(__file__).resolve().parent
+        directory = Path(__file__).resolve().parents[1]
         glyphs = load_glyphs(directory / 'RED2 Font.aseprite', 'aseprite')
         kern = AutoKerning(glyphs)
         approved = {'P.': [0, 11], 'F.': [0, 11], 'L.': [0, 18],
@@ -361,7 +358,7 @@ class ExampleRenderTest(unittest.TestCase):
                                             glyphs[left].width)
 
     def test_comma_sequences_keep_left_edges_in_reading_order(self):
-        directory = Path(__file__).resolve().parent
+        directory = Path(__file__).resolve().parents[1]
         glyphs = load_glyphs(directory / 'RED2 Font.aseprite', 'aseprite')
         kern = AutoKerning(glyphs)
         expected = {'#,4': [0, 12, 16], '#,,4': [0, 12, 19, 19],
@@ -381,7 +378,7 @@ class ExampleRenderTest(unittest.TestCase):
                     occupied.update(pixels)
 
     def test_repeated_and_partially_overlapping_marks_respect_all_pair_bounds(self):
-        directory = Path(__file__).resolve().parent
+        directory = Path(__file__).resolve().parents[1]
         glyphs = load_glyphs(directory / 'RED2 Font.aseprite', 'aseprite')
         kern = AutoKerning(glyphs)
         for text in ('T.T', 'P...O', "L''.", "L'.T", 'F.-T', 'P. O', 'P.4', 'PO' * 100):
@@ -393,12 +390,12 @@ class ExampleRenderTest(unittest.TestCase):
 
     def test_example_render(self):
         """Render the real font sample and leave example.png for the README."""
-        directory = Path(__file__).resolve().parent
+        directory = Path(__file__).resolve().parents[1]
         output = directory / "example.png"
         warnings = io.StringIO()
         with contextlib.redirect_stderr(warnings):
             size = render(EXAMPLE_TEXT, directory / "RED2 Font.aseprite",
-                          output, "aseprite")
+                          output, "aseprite", kerning_slack=0)
         self.assertEqual(warnings.getvalue(), "", "Sample text has missing glyphs")
         with Image.open(output) as image:
             self.assertEqual(image.size, size)

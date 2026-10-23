@@ -8,10 +8,11 @@ This is a visual approximation, not a replacement for vector glyph outlines.
 
 import argparse
 from pathlib import Path
+from .paths import ROOT, DEFAULT_SOURCE
 
 from PIL import Image, ImageDraw, ImageFont
 
-from antialias_font import (
+from .antialias import (
     antialias_coverage, lightness_srgb,
     quantize_2bit as quantize_coverage,
 )
@@ -62,8 +63,8 @@ def comparison(source, smoothed, labels=("ORIGINAL", "SIMULATED ANTI-ALIASING"))
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", type=Path, default=Path(__file__).with_name("example.png"))
-    parser.add_argument("--output-dir", type=Path, default=Path(__file__).with_name("previews"))
+    parser.add_argument("--input", type=Path, default=ROOT / "example.png")
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "previews")
     args = parser.parse_args()
     with Image.open(args.input) as image:
         source = image.convert("RGB")

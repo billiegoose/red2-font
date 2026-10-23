@@ -1,0 +1,129 @@
+{
+  "source_glyphs": 85,
+  "spacing": 4,
+  "pair_classes": {
+    "original": {
+      "advances": [
+        65,
+        51
+      ],
+      "adjustments": [
+        55,
+        51
+      ]
+    },
+    "widened": {
+      "advances": [
+        65,
+        51
+      ],
+      "adjustments": [
+        58,
+        51
+      ]
+    }
+  },
+  "state_advance_classes": {
+    "original": {
+      "states": 176,
+      "advance_classes": [
+        132,
+        51
+      ]
+    },
+    "widened": {
+      "states": 85,
+      "advance_classes": [
+        65,
+        51
+      ]
+    }
+  },
+  "explicit_rules": {
+    "current": 3686,
+    "widened": 1417
+  },
+  "current-classes": {
+    "gpos_equivalence_classes": [
+      118,
+      109
+    ],
+    "ttf": 32228,
+    "woff2": 6404,
+    "glyphs": 176,
+    "tables": {
+      "head": 54,
+      "hhea": 36,
+      "maxp": 32,
+      "OS/2": 96,
+      "hmtx": 700,
+      "cmap": 180,
+      "loca": 354,
+      "glyf": 13730,
+      "name": 348,
+      "post": 2150,
+      "GPOS": 11292,
+      "GSUB": 3044
+    }
+  },
+  "widened-classes": {
+    "gpos_equivalence_classes": [
+      58,
+      51
+    ],
+    "ttf": 17444,
+    "woff2": 3408,
+    "glyphs": 85,
+    "tables": {
+      "head": 54,
+      "hhea": 36,
+      "maxp": 32,
+      "OS/2": 96,
+      "hmtx": 312,
+      "cmap": 180,
+      "loca": 172,
+      "glyf": 8940,
+      "name": 348,
+      "post": 876,
+      "GPOS": 6206
+    }
+  },
+  "current-explicit": {
+    "ttf": 33112,
+    "woff2": 5980,
+    "glyphs": 176,
+    "tables": {
+      "head": 54,
+      "hhea": 36,
+      "maxp": 32,
+      "OS/2": 96,
+      "hmtx": 700,
+      "cmap": 180,
+      "loca": 354,
+      "glyf": 13730,
+      "name": 348,
+      "post": 2150,
+      "GPOS": 12174,
+      "GSUB": 3044
+    }
+  },
+  "widened-explicit": {
+    "ttf": 17052,
+    "woff2": 3628,
+    "glyphs": 85,
+    "tables": {
+      "head": 54,
+      "hhea": 36,
+      "maxp": 32,
+      "OS/2": 96,
+      "hmtx": 312,
+      "cmap": 180,
+      "loca": 172,
+      "glyf": 8940,
+      "name": 348,
+      "post": 876,
+      "GPOS": 5814
+    }
+  },
+  "shaping_checks_per_variant": 9852
+}

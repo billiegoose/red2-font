@@ -10,14 +10,14 @@ import uharfbuzz as hb
 from PIL import Image, ImageDraw, ImageFont
 from fontTools.ttLib import TTFont
 
-from export_web_font import (
+from src.web_font import (
     UNITS_PER_PIXEL, build_font, build_kerning_states, export_web_font,
     glyph_name, supported_characters_text, verify_two_glyph_history,
 )
-from render_font import AutoKerning, layout_line, load_glyphs
+from src.font import AutoKerning, layout_line, load_glyphs
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def sample_glyph(rows):
@@ -190,14 +190,14 @@ class RealFontExportTests(unittest.TestCase):
     def test_contextual_state_machine_is_compact_and_encoded(self):
         base, states, transitions = build_kerning_states(self.glyphs, self.kerning)
         self.assertEqual(len(base), 85)  # Includes c=0 reserved for .notdef.
-        self.assertEqual(len(states), 209)
+        self.assertEqual(len(states), 176)
         self.assertEqual(len(transitions), len(states) * len(base))
         self.assertEqual(sum(target != base[right]
-                             for (state, right), (target, _) in transitions.items()), 222)
+                             for (state, right), (target, _) in transitions.items()), 147)
         expected_rules = sum(step != self.kerning.nominal_advance(state[0])
                              for (state, right), (_, step) in transitions.items())
         self.assertEqual(self.rule_count, expected_rules)
-        self.assertEqual(self.rule_count, 5164)
+        self.assertEqual(self.rule_count, 3686)
         for file in (self.ttf, self.woff2):
             with self.subTest(format=file.suffix):
                 font = TTFont(file)

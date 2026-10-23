@@ -5,14 +5,14 @@ import unittest
 
 from PIL import Image
 
-from antialias_font import (
+from src.antialias import (
     FITTED_PALETTE, antialias_coverage, antialias_glyph, compile_glyph, quantize_2bit,
 )
 
 
 class AntialiasFontTests(unittest.TestCase):
     def test_matches_selected_preview(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         # Isolated first phrase with black separation from other text; exercising
         # contour refinement as well as quantization against the chosen artifact.
         box = (0, 0, 175, 26)

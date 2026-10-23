@@ -1,364 +1,262 @@
-# Font
+# RED2 Font
 
 I felt like designing a font, so I did.
 
 ![Example render](./example.png)
 
-## Web font (WOFF2 and TrueType)
+## Generate font assets
 
-Export this Aseprite bitmap font as ordinary, scalable outline fonts with the
-FPGA's two-glyph-lookbehind kerning encoded in OpenType `GSUB` (`calt`) and
-`GPOS` (`kern`) features:
-
-```sh
-python -m pip install -r requirements.txt
-python export_web_font.py
-```
-
-This generates `dist/RED2-Regular.woff2`, `dist/RED2-Regular.ttf`,
-`dist/red2-font.css`, `dist/demo.html`, and `dist/supported-characters.txt`.
-The UTF-8 character list has one entry per mapped glyph, sorted by Unicode
-code point, with the character (quoted to make spaces visible), its `U+` code
-point, and its Unicode name. It excludes the reserved `.notdef` (`c=0`) glyph.
-The list is regenerated alongside the fonts, so it stays in sync with their
-supported character set. The generated `dist/` directory is
-ignored by Git; rerun the exporter after editing the Aseprite artwork. The
-exporter also accepts `--source`, `--aseprite`, `--layer`, `--spacing`, and
-`--output-dir` overrides, mirroring the normal renderer.
-
-Copy the generated font files and `red2-font.css` into the same directory on
-your website. The stylesheet contains the `@font-face` declaration and a
-`.red2` class, so your HTML can simply use:
-
-```html
-<link rel="stylesheet" href="/fonts/red2-font.css">
-<p class="red2">HELLO, WORLD! AVATAR 0123456789</p>
-```
-
-### Recommended CSS for sharp rendering
-
-The generated `red2-font.css` already includes these recommended settings in
-its `.red2` class:
-
-```css
-.red2 {
-  font-family: "RED2", monospace;
-  font-size: 32px;
-  font-weight: 400;
-  font-synthesis: none;
-  letter-spacing: 0;
-  line-height: 1.125; /* 36px: 32 glyph rows + 4px line gap */
-  font-kerning: normal;
-  font-variant-ligatures: contextual;
-  font-feature-settings: "kern" 1, "calt" 1;
-}
-```
-
-For the crispest rendering, use **32px** with **400/normal weight**, and avoid
-fractional CSS-pixel positioning, transforms that scale text, and non-100%
-browser zoom. At 32px, one source bitmap pixel corresponds to one CSS pixel;
-`letter-spacing: 0` preserves the intended kerning advances, while
-`font-synthesis: none` prevents the browser from inventing bold or italic
-outlines. **Keep both `kern` and `calt` enabled:** contextual substitution is
-required to reproduce the FPGA's two-glyph-lookbehind kerning.
-
-These settings improve the chances of pixel-aligned text, but cannot guarantee
-bitmap-identical output. Browser/OS font rasterizers may still anti-alias the
-vector outlines, particularly at fractional positions, non-native sizes,
-non-integer display scaling, or zoom levels other than 100%. The exported
-outlines have no TrueType hinting. `image-rendering: pixelated` does **not**
-control font rasterization and will not fix blurry text. For guaranteed hard
-bitmap pixels, render the original bitmap glyphs as images instead.
-
-Text color, backgrounds, and layout remain regular CSS properties. The source
-contains 84 Unicode-mapped glyphs, including four triangle characters:
-`▲` (U+25B2), `▶` (U+25B6), `▼` (U+25BC), and `◀` (U+25C0), plus
-11 box-drawing characters (`─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼`).
-The Aseprite source also has a reserved **`.notdef`** glyph (`c=0`), making
-85 source slices but still 84 Unicode-mapped text characters. Both exported
-fonts use the actual pixel outline as OpenType glyph ID 0, rather than an empty
-placeholder. This glyph is intentionally **not** mapped to U+0000; HarfBuzz
-can render it for unknown characters, including with the normal contextual
-kerning. Browsers may instead choose another installed font for unsupported
-Unicode characters (CSS font fallback), so a browser cannot be relied on to
-show this `.notdef` artwork whenever a character is missing. A generated
-`demo.html` shows the web font in use.
-
-**Contextual kerning:** Each successive character is placed at the maximum
-position required by the preceding two glyphs, exactly as the FPGA renderer
-does. The exporter compiles this two-glyph history into a finite-state machine
-with 209 states: 85 source glyphs (including `.notdef`) and 124 invisible glyph alternates. OpenType
-`calt` (contextual substitution) carries that state along the text, and `kern`
-(GPOS pair positioning) applies its advance. Both features must be enabled;
-the generated CSS enables them explicitly. For example, browser shaping places
-`P.O.` at `[0, 11, 18, 39]`, matching the Python renderer rather than the
-`[0, 11, 16, 37]` from ordinary adjacent-pair kerning. There are 5,164 nonzero state-dependent GPOS pair rules. The generated
-font sizes are reported by the exporter.
-
-This exactness depends on a property of the pair-advance table: an exhaustive
-four-character check must prove that older glyphs cannot impose a stronger
-constraint than the previous two. The exporter runs this proof and refuses to
-build if it fails. On the current artwork it passes at spacing 4 (the FPGA
-default), 5, and 8, but fails at spacing 0–3, where the Python renderer can
-need more than two preceding glyphs. Changing the artwork or spacing therefore
-cannot silently produce a font advertised as pixel-layout equivalent.
-
-To run the web-font regression tests, including bitmap rasterization, all
-adjacent pairs, and 2,000 randomized multi-character HarfBuzz shaping checks:
-
-```sh
-python -m unittest test_export_web_font.py
-```
-
-To preview simulated anti-aliasing without changing the source artwork:
-
-```sh
-python simulate_antialiasing.py
-```
-
-This writes `previews/antialiasing.png` and a labeled before-and-after study at
-`previews/antialiasing-comparison.png`, including enlarged pixel details. It
-infers diagonal contours with three Scale2x passes and samples their coverage
-back to the original size. This approximates smoother edges from the bitmap;
-vector outlines would allow more precise anti-aliasing. The normal renderer
-and Aseprite artwork are unchanged.
-
-The selected compiler output is the fitted palette **0, 59, 198, 255** in
-`previews/antialiasing-2bit-fitted.png`. See [ANTIALIASING.md](./ANTIALIASING.md)
-for a minimal two-color → four-color glyph example, and
-[antialias_font.py](./antialias_font.py) for its implementation. The preview script
-regenerates this selected version too.
-
-For comparison, the script also exports packed 2-bit PNGs using four equally spaced RGB shades
-(`antialiasing-2bit.png`) and four equally spaced CIELAB lightness levels
-(`antialiasing-2bit-perceptual.png`). The latter uses sRGB grays 0, 78, 162, 255
-and quantizes to the nearest perceptual lightness without dithering. Compare
-them in `previews/antialiasing-perceptual-comparison.png`.
-
-Render the sliced glyphs with Python and Aseprite:
+The two entry points are `generate_font.py` for exports and `render_font.py`
+for bitmap previews. Implementation code lives in `src/`; tests live in `tests/`.
+Python, Pillow, FontTools, and an `aseprite` executable are required.
 
 ```sh
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-python render_font.py "0123456789ABCD"
+python -m pip install -r requirements.txt
+
+python generate_font.py --spacing 6 --kerning-slack 3 --widen-pairs --export woff,ttf,bram
 ```
 
-This runs `aseprite` from PATH, exports the first frame and slice metadata to
-temporary files, maps slice userdata such as `c=65`, `c=U+25B2`, or `U+25B2`
-to Unicode code points, and writes a black-background `output.png` in the
-current directory. It exports only the `Glyphs` layer, excluding the Background
-guide lines. Ordinary glyphs are cropped horizontally; vertical slice metrics
-and blank space widths are preserved. Glyphs marked `k=0` are **not** cropped:
-their transparent left/right margins define the artwork's alignment inside a
-fixed-width cell.
-Use `--aseprite /path/to/aseprite`, `--source font.aseprite`, or
-`--output preview.png` to override the defaults.
+This loads the Aseprite source once, computes one kerning table, and shares that
+same table between all selected formats. No separate exporter commands are
+needed. Output goes to `dist/` by default.
 
-Every slice must have explicit code-point userdata: `c=<decimal>` for the
-existing ASCII characters, or `c=U+<hex>` / `U+<hex>` for Unicode. For example,
-`c=65` and `c=U+0041` both mean `A`; `U+25B2` means `▲`. The parser checks
-Unicode scalar validity and rejects duplicate code points even when written
-in different notations. To disable automatic optical kerning for a glyph, put
-`k=0` on a separate line of the slice's userdata, for example:
+```sh
+# Default: spacing 4, slack 2, two-predecessor placement; WOFF, TTF, and BRAM.
+python generate_font.py
+
+# Exact original kerning, without class approximation.
+python generate_font.py --kerning-slack 0
+
+# Select WOFF2 in place of WOFF version 1.
+python generate_font.py --export woff2,ttf,bram
+
+# Only FPGA ROMs, in a separate directory.
+python generate_font.py --kerning-slack 2 --export bram --output-dir dist/fpga
+```
+
+| Option | Meaning | Default |
+| --- | --- | --- |
+| `--spacing N` | Optical edge-gap target and vertical search radius, in source pixels | `4` |
+| `--kerning-slack N` | Maximum extra origin advance per pair for class compression | `2` |
+| `--widen-pairs` | Enforce placement using only the immediately preceding glyph | Off |
+| `--export FORMATS` | Comma-separated `woff`, `woff2`, `ttf`, `bram` | `woff,ttf,bram` |
+| `--output-dir PATH` | Destination directory | `dist` |
+| `--source PATH` | Input artwork | `RED2 Font.aseprite` beside the entry points |
+| `--aseprite PATH` | Aseprite executable | `aseprite` on PATH |
+| `--layer NAME` | Artwork layer to export | `Glyphs` |
+
+`woff` means WOFF version 1 (`.woff`); `woff2` produces `.woff2`. Only selected
+formats are written. Existing unrelated files in the output directory are kept.
+Run `python generate_font.py --help` for the complete CLI help.
+
+### Shared kerning options
+
+The preparation order is:
+
+1. Compute optical pair advances at the requested spacing.
+2. Optionally widen them to satisfy the adjacent-pair invariant.
+3. Form classes with the requested kerning slack.
+4. Verify the required placement-history invariant before exporting.
+
+**Kerning slack** allows 0 through N extra pixels of origin advance for each
+pair. It never tightens a pair. With `--widen-pairs`, this bound is measured
+against the widened baseline; otherwise it is measured against the original
+optical table. Extra advance can accumulate across a string. Pairs involving
+fixed-cell (`k=0`) glyphs remain exact.
+
+Left classes group adjustment rows, and right classes group adjustment columns.
+The adjustment is `left.width + spacing - advance(left, right)`. A merged class
+block stores its minimum adjustment, and its original maximum-minus-minimum
+must be no larger than the slack. Repeated merges cannot accumulate more error
+than the per-pair budget.
+
+Among deterministic candidate partitions, selection first minimizes the
+power-of-two padded table capacity. Within that allocation, it minimizes counts
+of the largest pixel errors, then the next-largest errors, down through 1px.
+Exact cell count and stable tie breaks follow. Total widening is diagnostic,
+not the objective. On the current artwork, spacing 4 and slack 2 select **29 ×
+29 classes**: 125 pairs gain 2px, 540 gain 1px, and 6,560 remain unchanged.
+
+Widening is separate from slack. It repeatedly applies
+`d(B,C) = max(d(B,C), d(A,C) - d(A,B))` in ascending glyph order until
+`d(A,C) <= d(A,B) + d(B,C)` for every ordered triplet. This is a feasible greedy
+construction, not a globally minimum widening. It removes the need to consult A
+while placing C, but does not itself save a BRAM block in the existing VGA UART
+architecture.
+
+Without widening, generation checks every ordered quadruple to prove the two
+previous glyphs dominate every older constraint. With widening it checks the
+stronger three-glyph triangle invariant. Glyph changes, spacing changes, or slack
+cannot silently bypass these proofs; invalid candidate partitions are rejected.
+The current artwork at spacing 0–3 needs more history unless widening repairs it.
+
+## Output files
+
+`dist/font.json` records the source, settings, selected classes, pixel-error
+histogram, history proof, and generated file paths for every build.
+
+### Web fonts
+
+For selected web formats, generation writes `RED2-Regular.ttf`,
+`RED2-Regular.woff`, and/or `RED2-Regular.woff2`, plus:
+
+- `red2-font.css`, referencing only the selected web-font formats.
+- `demo.html`, a browser specimen.
+- `supported-characters.txt`, sorted Unicode mappings and names, excluding `.notdef`.
+
+```html
+<link rel="stylesheet" href="red2-font.css">
+<p class="red2">HELLO, WORLD! AVATAR 0123456789</p>
+```
+
+One source bitmap pixel corresponds to one CSS pixel at `font-size: 32px`.
+The generated CSS sets `font-synthesis: none`, `letter-spacing: 0`,
+`font-kerning: normal`, and enables both `kern` and `calt`. Keep these features
+on: with the original table, invisible glyph alternates carry placement history.
+With a widened pair-only table, alternates are unnecessary.
+
+Browser/OS rasterizers can still antialias the outlines. Avoid fractional sizes,
+scaling, and positioning for sharper rendering. These fonts have no TrueType
+hinting. CSS `image-rendering` does not control font rasterization. Use bitmap
+previews when exact source pixels are required.
+
+### BRAM ROMs
+
+The `bram` export writes a binary-ink, row-major font under `dist/bram/`:
+
+| File | Contents |
+| --- | --- |
+| `font.mem` | 2048 sixteen-bit hexadecimal words: dictionary bytes followed by cropped row IDs |
+| `metadata.mem` | 256 forty-three-bit glyph records |
+| `kerning.mem` | Four-bit adjustments, padded to the next power of two on each class axis |
+| `layout.json` | ROM dimensions, bit fields, glyph ID mapping, stride, and generation settings |
+| `red2_bram.py` | Equivalent Python ROM constants, including dense `KERNING` values |
+
+ASCII glyph IDs retain their values. Non-ASCII code points, sorted by Unicode,
+occupy IDs 128 onward. Glyph 0 is the reserved missing-glyph outline, not a U+0000
+text mapping. Fixed-cell transparent margins are retained.
+
+The bitmap packing follows the VGA UART examples: vertically crop glyphs,
+deduplicate their rows, and pack each dictionary pattern into three little-endian
+bytes. A row address supplies a nine-bit pattern ID. Dictionary bit 0 is the
+leftmost pixel. Read the row ID from `FONT_WORDS[base + y - top]`, then extract
+three bytes starting at byte offset `3 * row_id` from the same ROM.
+
+The 43-bit metadata fields are width `[4:0]`, guard `[7:5]`, validity `[8]`,
+height `[14:9]`, top `[19:15]`, base `[30:20]`, left class `[36:31]`, and right
+class `[42:37]`. Guards are zero because advances are nonnegative.
+Kerning addressing is `(left_class << right_bits) | right_class`, with
+`advance = previous_width + spacing - adjustment`.
+
+Use the exported stride/`KERNING_RIGHT_BITS` when adapting FPGA code; do not
+assume the older hardcoded 64-column stride. A 29×29 class table occupies 1024
+four-bit ROM locations (512 payload bytes). Physical BRAM allocation depends on
+the hardware implementation; a dedicated ROM can still consume one RAMB18.
+
+This layout supports glyphs up to 21×32, 512 row patterns, 2048 combined font
+words, 64 classes on each side, four-bit adjustments, and 256 glyph IDs.
+Generation reports a clear error if a selected BRAM format exceeds those limits.
+Web-only exports do not inherit BRAM limits.
+
+## Render bitmap previews
+
+```sh
+python render_font.py "AVATAR / P.O. / L'." --output preview.png
+python render_font.py "AVATAR" --spacing 6 --kerning-slack 3 --widen-pairs
+python render_font.py --pairs --output kerning_pairs.png
+```
+
+The renderer accepts the same source, layer, spacing, slack, and widening
+options as generation. With slack or widening enabled, it uses the same shared
+preparation as the exporters, over the complete source alphabet. Pair previews
+omit `.notdef` only after preparation, so their visible glyphs retain the same
+advances as other exports.
+
+`--pairs` also writes `kerning_pairs.csv`, omitting zero adjustments. It includes
+origin advance, adjustment from nominal advance, and the closest occupied-pixel
+gap. Blank glyphs have no measured gap. Newlines reset layout. Unsupported text
+uses the source `.notdef` glyph if present, otherwise it is skipped with a warning.
+Empty input yields a black 1×1 image.
+
+## Artwork and glyph metadata
+
+The loader exports frame 0 of the selected Aseprite layer, using explicit slice
+metadata rather than slice names. Each slice needs one unique Unicode scalar:
+
+```text
+c=65
+```
+
+Hexadecimal forms `c=U+25B2` and `U+25B2` are also accepted. To disable optical
+kerning and preserve the full fixed cell, use multiline metadata:
 
 ```text
 c=U+2500
 k=0
 ```
 
-All eleven box-drawing glyphs currently use `k=0`. Each retains its full
-17-pixel slice width, including transparent margins, and advances by exactly
-17 pixels without a spacing gap. Pairs containing a `k=0` glyph do not optically
-tighten, in either direction; the preceding glyph advances by its own nominal
-width (plus normal spacing unless that glyph is also `k=0`). A missing `k`
-field (or `k=1`) uses normal automatic kerning. The exported TrueType/WOFF2
-fonts preserve the same advances and the original in-cell left margins.
-Rendering reports all validation errors before composing the output.
+Ordinary glyphs are cropped horizontally to their alpha occupancy; their full
+vertical slice height is retained. Fixed-cell glyphs keep transparent side
+margins and advance by their original slice width. Pairs involving a fixed-cell
+glyph bypass optical tightening in both directions.
 
-To render the four Unicode triangles directly:
+The source currently has 84 mapped glyphs and one reserved `.notdef` slice
+(`c=0`). All four triangles (`▲ ▶ ▼ ◀`) and all eleven box-drawing characters
+(`─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼`) use `k=0`, with 17-pixel cells.
 
-```sh
-python render_font.py "◀ ▶ ▲ ▼" --output triangles.png
-```
+Optical kerning compares facing row edges within `±spacing` rows, moves the
+second glyph left toward a pixel-center distance of `spacing + 1`, and chooses
+the closer integer placement. Ties retain the wider placement. Both bounding
+box edges stay in reading order: advances are nonnegative and at least the
+left-width minus right-width. Blank glyphs retain their nominal advance.
 
-Unsupported characters are rendered with the Aseprite `.notdef` glyph
-(`c=0`), respecting the same spacing and earlier-glyph kerning constraints as
-ordinary glyphs. The renderer warns once per distinct unknown character.
-Newlines remain line breaks, not `.notdef` substitutions. With a source that
-has no `c=0` glyph, the previous behavior is preserved: unsupported characters
-are skipped without advancing. Empty text, or text containing no renderable
-glyphs, produces a black 1×1 PNG.
+Full bitmap layout satisfies `x = max(earlier_x + advance(earlier, next))`.
+A queue discards glyphs once their maximum possible reach is behind the current
+origin. This supports more than two predecessors when rendering exact previews
+at tightly packed spacing, while generation verifies its bounded-history rule.
 
-For glyph pairs without a `k=0` character, automatic kerning starts with the
-cropped glyph boxes `spacing` pixels apart (default 4). It compares the facing edge pixels in each row against rows up to
-`spacing` pixels above and below in the other glyph. The second glyph moves left
-one pixel at a time until the closest Euclidean gap falls below the target,
-then chooses that placement or the previous one, whichever is closer to the target.
-Ties retain the wider placement. Actual gaps can be slightly below the target.
-The threshold between pixel centers is `spacing + 1`, preserving the convention
-that 3 means three empty pixels on a straight horizontal row. Blank glyphs and
-pairs with no edges within the vertical radius keep their nominal advance.
-
-Tightening also stops before the right glyph's right edge would move inside
-the left glyph's right edge. The final pair advance is
-`max(edge_gap_advance, left.width - right.width, 0)`. The right glyph's left edge
-cannot come before the left glyph's left edge. Because horizontal transparent
-margins are cropped, this means the advance must be nonnegative.
-When the artwork permits it,
-a narrow mark sits completely under the letter, flush with its right edge.
-For example, periods tuck under P/F and an apostrophe tucks above L. Blank
-glyphs retain nominal advances. This constraint can widen the nearest edge gap.
-
-The left-edge constraint prevents a negative comma/4 advance from placing 4
-before the second comma in `#,,4`. Equal left edges are allowed; actual occupied
-pixels still respect the edge-gap rule.
-
-Text layout takes the maximum required position across earlier glyphs:
-`x = max(earlier_x + advance(earlier, next))`. In `P.O.`, O respects both P/O
-and period/O spacing. In `L'.`, the apostrophe aligns with L's right edge and
-the period keeps the same position as in `L.`. Repeated marks also respect each
-other's pair advances, so they do not stack on the same pixels. This requires
-only two-input pair lookups, without a three-input table or character-specific
-exceptions.
-
-The layout state is a queue of recent glyphs. An entry is discarded once
-`earlier_x + nominal_advance(earlier) <= x`: no pair advance exceeds that
-bound, and future left edges cannot move backward. The nominal advance is
-`width + spacing` for ordinary glyphs or the original slice width for `k=0`. Both box edges stay in
-reading order, so entries expire from the front of the queue. Only glyphs still
-within reach require pair lookups; there is no map of character occurrences or
-fixed two-glyph cutoff. For example, at spacing 3, `/,<T` still needs the `/`
-constraint after the comma and `<`. State resets at line breaks. Pair previews
-and CSV exports show independent pair advances; full strings combine their
-constraints during layout.
-
-With the default four-pixel gap, P is 14 pixels wide and the period is three.
-The period therefore sits at x=11, ending flush with P at x=14. O's origin is
-`max(0 + advance(P, O), 11 + advance(period, O)) = max(18, 16) = 18`, the same
-position as in `PO`. Similarly, the apostrophe in `L'.` sits at x=11, while both
-L/period and apostrophe/period require the period at x=18, matching `L.`.
-
-```sh
-python render_font.py --pairs --output kerning_pairs.png
-python render_font.py "AVATAR" --spacing 2
-python -m unittest test_render_font.py
-```
-
-`--pairs` renders every ordered pair of mapped text glyphs, including digits,
-punctuation, and spaces, ordered by code point. The reserved `.notdef` glyph
-(`c=0`) is excluded from these samples and the accompanying CSV.
-For N mapped glyphs, it produces N² pairs
-in N rows. Pair samples have a separate visual gap and do not require a space
-slice. Text input also supports
-newlines. `--spacing` controls the target gap and vertical search radius and `--layer` selects the artwork
-layer. Advances are computed from the cropped widths and cached for repeated pairs.
-
-`--spacing` accepts nonnegative integers. At `--spacing 0`, edge pixel centers
-may be one pixel apart: glyphs can touch, but their pixels do not overlap.
-
-`--pairs` also writes `kerning_pairs.csv` beside the PNG, omitting pairs whose
-kerning adjustment is zero. The PNG still shows every pair. Columns contain the
-left/right characters, requested spacing, advance, adjustment relative to the
-left glyph's nominal advance (slice width for `k=0`, otherwise cropped width
-plus spacing), and the actual minimum pixel-center distance minus 1.
-Distances are measured across all occupied pixels and rounded to six decimals.
-
-CSV distances are blank for pairs containing an empty glyph such as space.
-
-The example render test uses the real Aseprite font and writes `example.png` in
-the project directory. Run it on its own with:
-
-```sh
-python -m unittest test_render_font.ExampleRenderTest
-```
-
-## Cropped glyphs and metadata
-
-Consumers can import the existing loader directly. It requires Pillow and an
-Aseprite executable, using the same environment as the renderer:
+## Python modules and diagnostics
 
 ```python
-from pathlib import Path
-from render_font import load_glyphs, AutoKerning, horizontal_ink_metrics
+from src.font import load_glyphs, compose
+from src.paths import DEFAULT_SOURCE
+from src.pipeline import prepare_font
 
-# Run from this checkout, or supply an absolute source path.
-glyphs = load_glyphs(Path("RED2 Font.aseprite"), "aseprite", layer="Glyphs")
-kerning = AutoKerning(glyphs, spacing=4)
-
-output = Path("glyphs")
-output.mkdir(exist_ok=True)
-for code, image in sorted(glyphs.items()):
-    image.save(output / f"{code:03d}.png")
-    print({
-        "codepoint": code,
-        "character": chr(code),
-        "width": image.width,
-        "height": image.height,
-        "ink_bounds": image.getchannel("A").getbbox(),
-        "horizontal_ink_metrics": horizontal_ink_metrics(image),
-    })
-
-left, right = ord("A"), ord("V")
-advance = kerning.advance(left, right)
-adjustment = advance - kerning.nominal_advance(left)
-print("A to V:", advance, "pixels; adjustment:", adjustment)
+font = prepare_font(load_glyphs(DEFAULT_SOURCE, "aseprite"),
+                    spacing=4, kerning_slack=2)
+compose("HELLO, WORLD!", font.glyphs, font.kerning).save("hello.png")
 ```
 
-`load_glyphs` returns a dictionary-like `GlyphCollection` mapping integer
-Unicode code points to independent Pillow RGBA images. Its
-`fixed_advances` mapping records the slice width of every `k=0` glyph. The PNGs preserve transparent pixels. A glyph
-exists when its code point is in the dictionary; `glyphs.get(code)` returns
-`None` for an unsupported character. The loader does not limit the font to ASCII. The reserved entry `glyphs[0]`
-is `.notdef` artwork for unknown characters, not a Unicode cmap entry.
-Slice userdata is the character mapping: `c=65` means `A`, while
-`c=U+25C0` means `◀` and bare `U+25B2` means `▲`. Decimal and Unicode hex
-notation both work. Slice names are not used to identify characters. Missing or duplicate mappings,
-invalid Unicode scalars, and invalid frame-zero bounds are rejected.
+`src.font` also provides `AutoKerning`, `layout_line`, `contours`, and
+`horizontal_ink_metrics`. `src.kerning` contains class grouping, deterministic
+widening, and history proofs. `src.web_font` and `src.bram` consume prepared
+kerning. `src.pipeline.generate` is the programmatic equivalent of the central
+CLI. The `render_font` entry point retains its glyph-loader imports for older
+FPGA consumers.
 
-The loader exports frame 0 of the selected artwork layer and uses each slice's
-frame-zero bounds. Slices without a frame-zero key are not loaded. For a glyph
-with ink, it removes only the fully transparent columns to the left and right.
-It preserves the entire slice height, including transparent top and bottom rows.
-An entirely transparent glyph keeps its original slice width and height, so
-space still has a usable width. Pixel occupancy is determined by nonzero alpha,
-not RGB color; `(0, 0)` is the cropped left edge and the original slice top.
-
-The available metrics are:
-
-| Metric | How to obtain it | Meaning |
-| --- | --- | --- |
-| Character code | Dictionary key | Explicit slice userdata code point |
-| Cropped dimensions | `image.width`, `image.height` | Artwork extent, with vertical slice metrics preserved |
-| Occupied bounds | `image.getchannel("A").getbbox()` | `(left, top, right, bottom)` with exclusive right/bottom; `None` for blank glyphs |
-| Right ink edge and median | `horizontal_ink_metrics(image)` | `(exclusive_right_edge, upper_median_ink_x)`; `None` for blank glyphs |
-| Pair advance | `kerning.advance(left, right)` | Right glyph's x origin relative to the left glyph's origin |
-| Pair adjustment | Advance minus left width and spacing | Signed change from nominal placement; zero means no tightening |
-
-The median is weighted by actual occupied pixels, not by occupied columns. It is
-available for artwork inspection; kerning uses the right-edge rule above. Pair
-order matters; compute both directions if needed. To obtain every pair, iterate over `sorted(glyphs)`
-for both left and right and call `advance`. The existing `--pairs` command also
-exports nonzero adjustments to the ordinary CSV described above.
-
-Width is not a universal advance: pair advance depends on the next glyph and
-chosen spacing, and a full string can impose additional earlier-glyph bounds.
-Consumers can call `layout_line(codes, kerning)` with supported code points to
-obtain `(codepoint, x)` placements matching the renderer. The renderer uses the
-maximum glyph height plus four pixels for line advance. That is a layout
-convention, not a baseline stored in the
-source. The returned dictionary does not expose slice names, original sheet
-coordinates, or removed horizontal margins. If those are needed, export and
-retain the original Aseprite slice metadata separately:
+Optional development reports are module commands; normal generation does not
+run every comparison or benchmark:
 
 ```sh
-aseprite -b --list-slices --layer Glyphs --frame-range 0,0 \
-  "RED2 Font.aseprite" --sheet sheet.png --data slices.json
+python -m src.analyze_kerning
+python -m src.approximate_kerning_classes --kerning-slack 2
+python -m src.measure_kerning_sizes
+python -m src.simulate_antialiasing
 ```
 
-The original slice metadata is under `meta.slices` in `slices.json`; the `data`
-field holds the character mapping and `keys` holds frame-specific bounds in
-sheet coordinates. Keep the sheet untrimmed so those coordinates remain valid.
-The Python loader uses temporary export files and returns the images after
-those files have been removed. Downstream projects choose their own storage
-and hardware layout from these images and metrics.
+[ANTIALIASING.md](ANTIALIASING.md) describes the reusable four-level glyph
+compiler in `src.antialias`. The preview module produces the historical fitted,
+linear, and perceptual comparisons without changing source artwork.
+
+## Tests
+
+```sh
+python -m unittest discover -s tests
+```
+
+Tests cover artwork metadata, kerning bounds and history proofs, stable class
+selection, pixel rendering, web-font shaping/rasterization, and decoding BRAM
+ROMs. The generation tests verify that all requested formats share one prepared
+kerning table and that the preferred slack-2 result remains 29×29.
