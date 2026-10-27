@@ -32,6 +32,9 @@ python generate_font.py --kerning-slack 0
 # Select WOFF2 in place of WOFF version 1.
 python generate_font.py --export woff2,ttf,bram
 
+# Flashable font-v2 header + one 1024 x 32 BRAM payload.
+python generate_font.py --export v2
+
 # Only FPGA ROMs, in a separate directory.
 python generate_font.py --kerning-slack 2 --export bram --output-dir dist/fpga
 ```
@@ -41,7 +44,7 @@ python generate_font.py --kerning-slack 2 --export bram --output-dir dist/fpga
 | `--spacing N` | Optical edge-gap target and vertical search radius, in source pixels | `4` |
 | `--kerning-slack N` | Maximum extra origin advance per pair for class compression | `2` |
 | `--widen-pairs` | Enforce placement using only the immediately preceding glyph | Off |
-| `--export FORMATS` | Comma-separated `woff`, `woff2`, `ttf`, `bram` | `woff,ttf,bram` |
+| `--export FORMATS` | Comma-separated `woff`, `woff2`, `ttf`, `bram`, `v2` | `woff,ttf,bram` |
 | `--output-dir PATH` | Destination directory | `dist` |
 | `--source PATH` | Input artwork | `RED2 Font.aseprite` beside the entry points |
 | `--aseprite PATH` | Aseprite executable | `aseprite` on PATH |
@@ -96,6 +99,74 @@ The current artwork at spacing 0–3 needs more history unless widening repairs 
 
 `dist/font.json` records the source, settings, selected classes, pixel-error
 histogram, history proof, and generated file paths for every build.
+
+### Font v2 flash binary
+
+`--export v2` writes `dist/RED2-Regular-v2.bin` for the fpgatool font-v2 demo.
+It shares the artwork, spacing, kerning classes, and history proof with all
+other formats, and runs independently of the fpgatool checkout.
+
+The 4,256-byte file contains a 160-byte header and 1,024 little-endian 32-bit
+BRAM words. Its header holds `RFV2`, version 2, lengths, table bases/counts,
+spacing, an additive checksum, and eight Unicode page slots. Payload offsets
+are word addresses relative to BRAM, excluding the header. The sum of every
+32-bit word in the file is zero modulo 2³². All unused/reserved words are zero.
+
+Header words 0–3 are magic/version/header bytes/payload words; word 4 is used
+payload bytes; words 5–9 are metadata/crop/rows/kerning/pattern bases; words
+10–13 are glyph/crop/row-byte/pattern counts; words 14–16 are spacing/page
+count/checksum; words 17–23 are reserved. Words 24–39 contain eight page pairs.
+Directory prefixes are unique. The first page word packs prefix:16, map-word-base:10, encoding:1; the second
+packs glyph-base:8, glyph-count:9 (least significant fields first). Encoding 0
+packs four mapping bytes per word; encoding 1 uses bits [28:21] of each pattern
+word. Missing mappings use byte 255 and fall back to glyph 0 (`.notdef`).
+
+This profile requires `.notdef`, glyphs no larger than 21 × 32, at most 256
+glyphs, 32 left/right kerning classes and crop classes, two pattern banks,
+2,048 shared row bytes, eight Unicode pages, spacing 0–31, and a payload that
+fits one BRAM. Capacity errors fail before replacing published outputs.
+The exporter finds the minimum supported pattern-bank count, trying one bank
+first and then grouping glyphs across two banks. Each bank holds 256 distinct
+pixel rows; rows shared across banks are duplicated. Bit 31 of each glyph's
+metadata selects its bank, so all of a glyph's rows stay in that bank. If the
+font cannot fit two banks, export reports the pattern count and this constraint.
+
+Font-v2 utilities use the same `generate_font.py` entry point and do not need
+Aseprite when operating on existing binaries or fixtures:
+
+```sh
+# Validate header/checksum/table bounds, page uniqueness, and glyph row bounds.
+./generate_font.py validate-v2 dist/RED2-Regular-v2.bin
+
+# Reproduce an FPGA simulation snapshot from legacy BRAM Python constants.
+./generate_font.py v2-reference ../fpgatool/examples/hardware/red2_row_data.py \
+  --output ../fpgatool/examples/hardware/red2_font_v2_data.py \
+  --binary ../fpgatool/build/reference-font-v2.bin
+
+# Verify complete old/new frames across the FPGA's spacing-change regression.
+./generate_font.py verify-v2-reload \
+  ../fpgatool/build/basys3/vga_uart_1920_1080_font_v2_capture/sim \
+  ../fpgatool/assets/red2-font-v2-notdef.txt \
+  --font ../fpgatool/build/reference-font-v2.bin --new-spacing 9
+```
+
+The reference fixture is an intentionally fixed historical snapshot. Normal
+`--export v2` uses the current artwork. Capture verification decodes the exact
+binary used by the simulation and compares every pixel, with UTF-8/editing,
+missing-glyph fallback, kerning, wrapping, and a single old-to-new transition.
+The FPGA route/timing build remains in fpgatool's toolchain; it does not belong
+to font asset generation.
+
+With the live-capable font-v2 demo running, use
+`fpgatool program-data dist/RED2-Regular-v2.bin --live --reload` from this
+checkout (default flash offset `0x220000`). This writes/verifies flash, then
+requests the demo's validated vblank reload. `--live` alone writes flash without
+changing the active font. Ordinary `program-data` replaces the running design
+temporarily and reboots afterward. Program the updated font-v2 demo into
+configuration flash once to make it survive power cycles. Its font tables
+and header do not need rebuilding for font changes
+that fit this profile. Full payload/descriptor layout is documented in
+`fpgatool/docs/font-v2-renderer.md`.
 
 ### Web fonts
 

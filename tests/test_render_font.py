@@ -80,7 +80,6 @@ class UnicodeSliceTests(unittest.TestCase):
         glyphs = load_glyphs(Path(__file__).resolve().parents[1] / "RED2 Font.aseprite", "aseprite")
         triangles = "▲▶▼◀"
         self.assertTrue(all(ord(character) in glyphs for character in triangles))
-        self.assertEqual(len(glyphs), 85)  # 84 mapped characters plus .notdef (c=0).
         fixed_codes = {ord(char) for char in '─│┌┐└┘├┤┬┴┼▲▶▼◀'}
         self.assertEqual(set(glyphs.fixed_advances), fixed_codes)
         self.assertEqual({glyphs.fixed_advances[code] for code in fixed_codes}, {17})

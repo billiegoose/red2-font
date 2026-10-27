@@ -1,5 +1,5 @@
-#!/usr/bin/env python3
-"""Generate RED2 font assets. Run --help for formats and kerning options."""
+#!./.venv/bin/python3
+"""Generate RED2 assets; --export v2 writes a flashable header + BRAM32 binary."""
 
 from src.generate import main
 

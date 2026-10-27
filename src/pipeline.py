@@ -86,10 +86,10 @@ def prepare_font(glyphs, spacing=SPACING, kerning_slack=KERNING_SLACK, widen_pai
 def generate(source, directory, formats=EXPORT_FORMATS, *, spacing=SPACING,
              kerning_slack=KERNING_SLACK, widen_pairs=WIDEN_PAIRS, aseprite="aseprite", layer="Glyphs"):
     """Load once, prepare once, and export only the requested formats."""
-    supported = {"woff", "woff2", "ttf", "bram"}
+    supported = {"woff", "woff2", "ttf", "bram", "v2"}
     formats = tuple(dict.fromkeys(formats))
     if not formats or set(formats) - supported:
-        raise ValueError("Export formats must be selected from woff, woff2, ttf, bram")
+        raise ValueError("Export formats must be selected from woff, woff2, ttf, bram, v2")
     glyphs = load_glyphs(Path(source), aseprite, layer)
     prepared = prepare_font(glyphs, spacing, kerning_slack, widen_pairs)
     directory = Path(directory)
@@ -113,7 +113,7 @@ def _export(prepared, source, directory, formats, layer):
     glyphs = prepared.glyphs
     spacing = prepared.settings["spacing"]
     files = []
-    web_formats = [name for name in formats if name != "bram"]
+    web_formats = [name for name in formats if name in {"woff", "woff2", "ttf"}]
     if web_formats:
         from .web_font import build_font, write_web_fonts
         font, _ = build_font(glyphs, spacing, kerning=prepared.kerning)
@@ -121,6 +121,9 @@ def _export(prepared, source, directory, formats, layer):
     if "bram" in formats:
         from .bram import export_bram
         files.extend(export_bram(prepared, directory / "bram"))
+    if "v2" in formats:
+        from .v2 import export_v2
+        files.extend(export_v2(prepared, directory))
     manifest = {"source": str(Path(source).resolve()), "layer": layer, "formats": list(formats),
                 "settings": prepared.settings, "glyph_count": len(glyphs),
                 "kerning": prepared.statistics,

@@ -1,4 +1,5 @@
 import contextlib
+from collections import Counter
 import io
 import json
 from pathlib import Path
@@ -8,7 +9,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from src.font import GlyphCollection, layout_line, load_glyphs
+from src.font import AutoKerning, GlyphCollection, layout_line, load_glyphs
 from src.generate import build_parser, main
 from src.pipeline import generate, prepare_font
 from tests.test_export_web_font import shaped_origins, shaping_font
@@ -43,7 +44,7 @@ class GenerationTests(unittest.TestCase):
                 with patch("src.pipeline.prepare_font", wraps=prepare_font) as prepare:
                     with patch("src.web_font.AutoKerning", side_effect=AssertionError("recomputed kerning")):
                         prepared, files = generate(ROOT / "RED2 Font.aseprite", directory,
-                                                   ("woff", "woff2", "ttf", "bram"),
+                                                   ("woff", "woff2", "ttf", "bram", "v2"),
                                                    spacing=6, kerning_slack=3, widen_pairs=True)
                 self.assertEqual(prepare.call_count, 1)
                 self.assertEqual(load.call_count, 1)
@@ -147,12 +148,19 @@ class GenerationTests(unittest.TestCase):
 
 
 class RealFontGenerationTests(unittest.TestCase):
-    def test_defaults_keep_preferred_29_by_29_candidate(self):
+    def test_defaults_validate_current_artwork_within_slack_budget(self):
         glyphs = load_glyphs(ROOT / "RED2 Font.aseprite", "aseprite")
         prepared = prepare_font(glyphs)
-        self.assertEqual((len(prepared.classes.left), len(prepared.classes.right)), (29, 29))
-        self.assertEqual(prepared.statistics["extra_pixel_histogram"], {"0": 6560, "1": 540, "2": 125})
+        # Artwork is editable; class counts and error histograms change with
+        # it. Check the optical-error bound rather than a past font snapshot.
+        original = AutoKerning(glyphs, prepared.settings['spacing'])
+        errors = Counter(prepared.kerning.advance(a, b)-original.advance(a, b)
+                         for a in glyphs for b in glyphs)
+        self.assertTrue(all(0 <= extra <= 2 for extra in errors))
+        self.assertEqual(prepared.statistics["extra_pixel_histogram"],
+                         {str(extra): count for extra, count in sorted(errors.items())})
         self.assertEqual(prepared.statistics["history_glyphs"], 2)
+        self.assertEqual(prepared.statistics['history_combinations_checked'], len(glyphs)**4)
 
 
 if __name__ == "__main__":

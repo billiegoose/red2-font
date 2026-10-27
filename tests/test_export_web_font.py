@@ -161,7 +161,7 @@ class RealFontExportTests(unittest.TestCase):
         self.assertIn("U+25B2\t'▲'", contents)
         self.assertIn("U+2500\t'─'\tBOX DRAWINGS LIGHT HORIZONTAL", contents)
         self.assertIn("U+253C\t'┼'\tBOX DRAWINGS LIGHT VERTICAL AND HORIZONTAL", contents)
-        self.assertEqual(len(codes), 84)
+        self.assertEqual(len(codes), len(self.glyphs)-1)
         self.assertNotIn("U+0000", contents)
         for file in (self.ttf, self.woff2):
             with self.subTest(format=file.suffix):
@@ -189,15 +189,17 @@ class RealFontExportTests(unittest.TestCase):
 
     def test_contextual_state_machine_is_compact_and_encoded(self):
         base, states, transitions = build_kerning_states(self.glyphs, self.kerning)
-        self.assertEqual(len(base), 85)  # Includes c=0 reserved for .notdef.
-        self.assertEqual(len(states), 176)
+        self.assertEqual(set(base), set(self.glyphs))
+        self.assertEqual(len(states), len(set(states)))
+        self.assertTrue(set(base.values()) <= set(states))
+        self.assertLessEqual(len(states), len(base)**2+len(base))
         self.assertEqual(len(transitions), len(states) * len(base))
-        self.assertEqual(sum(target != base[right]
-                             for (state, right), (target, _) in transitions.items()), 147)
+        for (state, right), (target, step) in transitions.items():
+            self.assertIn(target, states)
+            self.assertEqual(target[0], right)
         expected_rules = sum(step != self.kerning.nominal_advance(state[0])
                              for (state, right), (_, step) in transitions.items())
         self.assertEqual(self.rule_count, expected_rules)
-        self.assertEqual(self.rule_count, 3686)
         for file in (self.ttf, self.woff2):
             with self.subTest(format=file.suffix):
                 font = TTFont(file)
