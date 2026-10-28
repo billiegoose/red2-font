@@ -175,6 +175,23 @@ class ApproximateKerningClassTests(unittest.TestCase):
             self.assertEqual(result["chosen"]["dependent_triplets"], 1)
             self.assertTrue(result["chosen"]["history_valid"])
 
+    def test_bitset_history_proof_matches_exhaustive_reference(self):
+        rng = random.Random(183)
+        for trial in range(250):
+            codes = range(rng.randrange(1, 7))
+            table = {a: {b: rng.randrange(-3, 15) for b in codes} for a in codes}
+            witness = next(((a, b, c, d)
+                            for a in codes for b in codes for c in codes for d in codes
+                            if table[a][d] > max(table[a][b] + table[b][d],
+                                max(table[a][c], table[a][b] + table[b][c]) + table[c][d])), None)
+            with self.subTest(trial=trial):
+                if witness is None:
+                    self.assertEqual(verify_required_history(table, 2), len(table) ** 4)
+                else:
+                    with self.assertRaises(ValueError) as error:
+                        verify_required_history(table, 2)
+                    self.assertIn(repr(''.join(map(chr, witness))), str(error.exception))
+
     def test_no_candidate_is_exported_when_two_glyph_proof_fails(self):
         # A still constrains D after two intermediate zero-advance glyphs.
         table = {a: dict.fromkeys(range(4), 0) for a in range(4)}

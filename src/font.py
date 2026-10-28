@@ -206,8 +206,18 @@ class AutoKerning:
         # spacing empty pixels along a straight row means spacing + 1
         # between pixel centers. Compare facing edges within +/- spacing rows;
         # more distant rows cannot violate this clearance on the integer grid.
-        neighbors = [(b[yy][0] - a[y][1], yy - y)
-                     for y in a for yy in b if abs(yy - y) <= self.spacing]
+        # At a given vertical distance only the smallest horizontal gap
+        # can constrain placement: all evaluated gaps are positive. Collapse
+        # equivalent constraints before repeatedly measuring distances.
+        gaps = {}
+        for y, (_, edge) in a.items():
+            for yy in range(y - self.spacing, y + self.spacing + 1):
+                if yy in b:
+                    dy = abs(yy - y)
+                    dx = b[yy][0] - edge
+                    if dy not in gaps or dx < gaps[dy]:
+                        gaps[dy] = dx
+        neighbors = [(dx, dy) for dy, dx in gaps.items()]
         if not neighbors:
             return nominal
         target_distance = self.spacing + 1

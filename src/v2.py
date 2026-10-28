@@ -20,6 +20,7 @@ CHECKSUM_WORD = 16
 def pack_streams(streams):
     unique = sorted(set(s for s in streams if s))
     parts = [s for s in unique if not any(s != t and s in t for t in unique)]
+    @lru_cache(maxsize=None)
     def overlap(a, b):
         return next((n for n in range(min(len(a), len(b)), 0, -1)
                      if a[-n:] == b[:n]), 0)
@@ -80,15 +81,24 @@ def partition_patterns(glyphs):
     groups = sorted({sum(1 << i for i, mask in enumerate(masks) if mask & (1 << p))
                      for p in range(len(all_ids))})
     partitions = {}
+    # Union eight glyph masks per lookup rather than scanning every glyph
+    # for each candidate partition. Tables are local to this font build.
+    chunks = []
+    for start in range(0, len(masks), 8):
+        chunk = masks[start:start+8]
+        unions = [0] * (1 << len(chunk))
+        for subset in range(1, len(unions)):
+            bit = subset & -subset
+            unions[subset] = unions[subset ^ bit] | chunk[bit.bit_length()-1]
+        chunks.append((start, len(unions)-1, unions))
 
     def partition(selected):
         if selected not in partitions:
             first = second = 0
-            for i, mask in enumerate(masks):
-                if selected & (1 << i):
-                    second |= mask
-                else:
-                    first |= mask
+            for start, full, unions in chunks:
+                subset = (selected >> start) & full
+                second |= unions[subset]
+                first |= unions[full ^ subset]
             partitions[selected] = first, second
         return partitions[selected]
 

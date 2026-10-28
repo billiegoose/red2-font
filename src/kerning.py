@@ -1,5 +1,6 @@
 """Deterministic kerning matrices, class compression, and history proofs."""
 
+from bisect import bisect_right
 from dataclasses import dataclass
 from types import SimpleNamespace
 
@@ -89,22 +90,48 @@ def verify_two_glyph_history(kerning):
     codes = sorted(kerning.glyphs)
     advances = {left: {right: kerning.advance(left, right) for right in codes}
                 for left in codes}
-    for a in codes:
-        row_a = advances[a]
-        for b in codes:
-            row_b = advances[b]
-            xb = row_a[b]
-            for c in codes:
-                row_c = advances[c]
-                xc = max(row_a[c], xb + row_b[c])
-                for d in codes:
-                    if row_a[d] > max(xb + row_b[d], xc + row_c[d]):
-                        example = ''.join(chr(code) for code in (a, b, c, d))
-                        raise ValueError(
-                            f"Two-glyph history is insufficient for {example!r} "
-                            f"at spacing {kerning.spacing}; exact FPGA/Python "
-                            "layout equivalence cannot be guaranteed."
-                        )
+    rows = [[advances[a][b] for b in codes] for a in codes]
+    for ai, row_a in enumerate(rows):
+        # For each C, index D by d(A,D)-d(C,D). A bit in suffix[t]
+        # means A constrains D beyond C placed at t. This replaces the
+        # innermost D loop with an exact intersection of integer bitsets.
+        suffixes = []
+        for row_c in rows:
+            buckets = {}
+            for di, (ad, cd) in enumerate(zip(row_a, row_c)):
+                difference = ad - cd
+                buckets[difference] = buckets.get(difference, 0) | (1 << di)
+            suffix = {}
+            mask = 0
+            for difference in sorted(buckets, reverse=True):
+                mask |= buckets[difference]
+                suffix[difference - 1] = mask
+            suffixes.append((buckets, suffix))
+        # Only distinct differences are needed; bisect handles arbitrary
+        # advance magnitudes without allocating a range-sized table.
+        indexed = [(sorted(buckets), suffix) for buckets, suffix in suffixes]
+
+        def beyond(index, position):
+            thresholds, suffix = indexed[index]
+            offset = bisect_right(thresholds, position)
+            return suffix[thresholds[offset] - 1] if offset < len(thresholds) else 0
+
+        for bi, row_b in enumerate(rows):
+            xb = row_a[bi]
+            remaining = beyond(bi, xb)
+            if not remaining:
+                continue
+            for ci, row_c in enumerate(rows):
+                xc = max(row_a[ci], xb + row_b[ci])
+                witnesses = remaining & beyond(ci, xc)
+                if witnesses:
+                    di = (witnesses & -witnesses).bit_length() - 1
+                    example = ''.join(chr(codes[i]) for i in (ai, bi, ci, di))
+                    raise ValueError(
+                        f"Two-glyph history is insufficient for {example!r} "
+                        f"at spacing {kerning.spacing}; exact FPGA/Python "
+                        "layout equivalence cannot be guaranteed."
+                    )
     return len(codes) ** 4
 
 
@@ -157,6 +184,7 @@ def compress_classes(matrix, tolerance=1, strategy="balanced", protected=()):
     high = [row[:] for row in low]
     locked = [[max((matrix[a][b] for a in l for b in r if (a, b) in protected), default=-1)
                for r in right] for l in left]
+    costs = [{}, {}]
     while True:
         best = None
         for axis, groups in enumerate((left, right)):
@@ -169,19 +197,27 @@ def compress_classes(matrix, tolerance=1, strategy="balanced", protected=()):
                 rank = int(len(groups) < max(len(left), len(right)))
             else:
                 rank = 0
+            group_keys = [tuple(group) for group in groups]
             for i in range(len(groups)):
                 for j in range(i + 1, len(groups)):
-                    cost = 0
-                    for k, other in enumerate(opposite):
-                        lo1, lo2 = (low[i][k], low[j][k]) if axis == 0 else (low[k][i], low[k][j])
-                        hi1, hi2 = (high[i][k], high[j][k]) if axis == 0 else (high[k][i], high[k][j])
-                        lock1, lock2 = (locked[i][k], locked[j][k]) if axis == 0 else (locked[k][i], locked[k][j])
-                        minimum = min(lo1, lo2)
-                        if max(hi1, hi2) - minimum > tolerance or max(lock1, lock2) > minimum:
-                            break
-                        cost += len(other) * (len(groups[i]) * (lo1 - minimum)
-                                              + len(groups[j]) * (lo2 - minimum))
-                    else:
+                    key = (group_keys[i], group_keys[j])
+                    if key not in costs[axis]:
+                        cost = 0
+                        size_i, size_j = len(groups[i]), len(groups[j])
+                        for k, other in enumerate(opposite):
+                            lo1, lo2 = (low[i][k], low[j][k]) if axis == 0 else (low[k][i], low[k][j])
+                            hi1, hi2 = (high[i][k], high[j][k]) if axis == 0 else (high[k][i], high[k][j])
+                            lock1, lock2 = (locked[i][k], locked[j][k]) if axis == 0 else (locked[k][i], locked[k][j])
+                            minimum = lo1 if lo1 < lo2 else lo2
+                            if (hi1 - minimum > tolerance or hi2 - minimum > tolerance
+                                    or lock1 > minimum or lock2 > minimum):
+                                cost = None
+                                break
+                            cost += len(other) * (size_i * (lo1 - minimum)
+                                                  + size_j * (lo2 - minimum))
+                        costs[axis][key] = cost
+                    cost = costs[axis][key]
+                    if cost is not None:
                         loss = cost / len(opposite) if strategy == "area" else cost
                         score = (rank, loss, -len(groups[i]) - len(groups[j]),
                                  axis, groups[i][0], groups[j][0])
@@ -190,6 +226,11 @@ def compress_classes(matrix, tolerance=1, strategy="balanced", protected=()):
         if best is None:
             return ClassTable(left, right, low)
         _, axis, i, j = best
+        # Other pairs on this axis retain their blocks and costs. Across
+        # the opposite axis, costs change but rejected merges stay rejected:
+        # combining blocks can only widen extrema or strengthen a lock.
+        costs[1 - axis] = {key: None for key, cost in costs[1 - axis].items()
+                           if cost is None}
         groups = left if axis == 0 else right
         groups[i] = sorted(groups[i] + groups[j])
         del groups[j]
